@@ -64,6 +64,7 @@ echo ">> [2/6] 打包（排除 node_modules/dist/.git/log）并上传"
 rm -f "$TARBALL"
 tar czf "$TARBALL" -C "$LOCAL_PROJ" \
   --exclude='node_modules' --exclude='dist' --exclude='.git' --exclude='*.log' \
+  --exclude='.env' --exclude='backend/bin' --exclude='backend/data' \
   .
 LOCAL_MD5="$(md5sum "$TARBALL" | awk '{print $1}')"
 $SCP "$TARBALL" "root@${SERVER_IP}:/tmp/"
@@ -79,58 +80,83 @@ $SSH "root@${SERVER_IP}" "mkdir -p ${REMOTE_BASE} && tar xzf /tmp/${PROJ_NAME}.t
 echo ">> [3/6] 检查/生成密钥"
 HAS_SECRETS="$($SSH "root@${SERVER_IP}" "test -f ${REMOTE_SECRETS} && echo yes || echo no")"
 if [[ "$HAS_SECRETS" == "yes" ]]; then
-  echo ">> 复用已有密钥 ${REMOTE_SECRETS}（保持数据库密码不变）"
+  echo ">> 复用已有密钥 ${REMOTE_SECRETS}（保持 JWT/Meili/数据库密码不变，会话与数据延续）"
 else
   echo ">> 生成新密钥并写入 ${REMOTE_SECRETS}"
   $SSH "root@${SERVER_IP}" "umask 077; printf 'PGPW=%s\nJWT_SECRET=%s\nMEILI_MASTER_KEY=%s\nMEILI_API_KEY=%s\n' \
     \$(openssl rand -hex 12) \$(openssl rand -hex 24) \$(openssl rand -hex 24) \$(openssl rand -hex 24) > ${REMOTE_SECRETS}"
 fi
 
-# ---------- [4/6] 应用密钥到 compose（幂等：值已替换则跳过） ----------
-echo ">> [4/6] 应用密钥到 docker-compose.yml"
+# ---------- [4/6] 生成服务器 .env（含宿主 PG 的 DATABASE_DSN，复用旧 compose.bak 的 LLM/WeCom） ----------
+echo ">> [4/6] 生成 /opt/${PROJ_NAME}/.env（权限 600）"
 $SSH "root@${SERVER_IP}" "bash -s" <<'EOS'
 set -euo pipefail
 source /root/.ekh_secrets
-C=/opt/enterprise-knowledge-hub/docker-compose.yml
-python3 - "$C" "$PGPW" "$JWT_SECRET" "$MEILI_MASTER_KEY" <<'PYEOF'
-import sys
-c, pgpw, jwt, meili = sys.argv[1:5]
-s = open(c, encoding='utf-8').read()
-orig = s
+ENV=/opt/enterprise-knowledge-hub/.env
+BAK=/opt/enterprise-knowledge-hub/docker-compose.yml.bak
 
-def rep(a, b):
-    global s
-    if a in s:
-        s = s.replace(a, b)
-
-# 只在仍含默认值时替换（幂等）
-rep('POSTGRES_PASSWORD: postgres', f'POSTGRES_PASSWORD: {pgpw}')
-rep('JWT_SECRET: "change-me-in-production"', f'JWT_SECRET: "{jwt}"')
-rep('MEILI_MASTER_KEY: change-me-in-production', f'MEILI_MASTER_KEY: {meili}')
-rep('MEILI_API_KEY: "change-me-in-production"', f'MEILI_API_KEY: "{meili}"')
-
-old_dsn = 'postgres://postgres:postgres@postgres'
-new_dsn = f'postgres://postgres:{pgpw}@postgres'
-if old_dsn in s:
-    s = s.replace(old_dsn, new_dsn)
-
-if s != orig:
-    open(c, 'w', encoding='utf-8').write(s)
-    print("compose 密钥已更新")
-else:
-    print("compose 已是生产密钥，无需改动")
+# 从旧 compose 备份里提取 LLM / WeCom / 宿主 DSN（存在才提取；没有备份则留空待手工填）
+get_bak() { # get_bak KEY  -> 提取 yaml 里 `KEY: "value"` 或 `KEY: value` 的 value
+  python3 - "$1" <<'PYEOF'
+import re, sys
+key = sys.argv[1]
+try:
+    s = open('/opt/enterprise-knowledge-hub/docker-compose.yml.bak', encoding='utf-8').read()
+except Exception:
+    sys.exit(0)
+m = re.search(rf'^\s*{key}:\s*["\']?([^"\'\n]+)["\']?\s*$', s, re.M)
+print(m.group(1) if m else '')
 PYEOF
+}
+
+LLM_API_KEY="$(get_bak LLM_API_KEY)"
+WECOM_BOT_ID="$(get_bak WECOM_BOT_ID)"
+WECOM_BOT_SECRET="$(get_bak WECOM_BOT_SECRET)"
+OLD_DSN="$(get_bak DATABASE_DSN)"
+
+# 宿主 PG 地址：优先复用旧 DSN（保持连接原库）；没有则默认 127.0.0.1
+if [[ -z "$OLD_DSN" ]]; then
+  OLD_DSN="postgres://postgres:${PGPW}@127.0.0.1:5432/kb_hub?sslmode=disable"
+fi
+# 确保 DSN 用的是当前密钥里的 PGPW（替换旧密码段，避免旧 DSN 里的旧密码失效）
+HOST_DSN="$(python3 - "$OLD_DSN" "$PGPW" <<'PYEOF'
+import re, sys, urllib.parse as u
+dsn, pwd = sys.argv[1], sys.argv[2]
+dsn = re.sub(r'(postgres://postgres:)([^@]*)(@)', rf'\g<1>{u.quote(pwd)}\g<3>', dsn, count=1)
+print(dsn)
+PYEOF
+)"
+
+umask 077
+cat > "$ENV" <<EOF
+# 本文件由 deploy.sh 生成（权限 600）。不要提交、不要外泄。
+# 服务器复用宿主 PostgreSQL：不设 COMPOSE_PROFILES，DATABASE_DSN 指向宿主库，嵌入式 pg 容器自动跳过。
+DATABASE_DSN=$HOST_DSN
+POSTGRES_PASSWORD=$PGPW
+JWT_SECRET=$JWT_SECRET
+MEILI_MASTER_KEY=$MEILI_MASTER_KEY
+MEILI_API_KEY=$MEILI_API_KEY
+LLM_API_KEY=$LLM_API_KEY
+WEB_SEARCH_API_KEY=
+BOT_PLATFORM=wecom
+WECOM_BOT_ID=$WECOM_BOT_ID
+WECOM_BOT_SECRET=$WECOM_BOT_SECRET
+AUTH_ALLOW_REGISTER=false
+EOF
+echo ">> .env 已生成：$ENV"
 EOS
 
 # ---------- [5/6] 构建并启动 ----------
-echo ">> [5/6] 构建并启动容器（首次构建可能需 10-20 分钟）"
+echo ">> [5/6] 构建并启动容器（首次构建可能需 10-20 分钟；服务器 .env 未设 COMPOSE_PROFILES，嵌入式 postgres 自动跳过）"
 $SSH "root@${SERVER_IP}" "cd ${REMOTE_BASE} && docker compose build && docker compose up -d"
 
 # ---------- [6/6] 验证 ----------
 echo ">> [6/6] 等待启动并验证"
 sleep 8
 $SSH "root@${SERVER_IP}" "cd ${REMOTE_BASE} && docker compose ps"
-
+echo
+echo "== 数据库指向（应为宿主库） =="
+$SSH "root@${SERVER_IP}" "grep -E 'DATABASE_DSN' ${REMOTE_BASE}/.env"
 echo
 echo "== 后端健康 =="
 $SSH "root@${SERVER_IP}" "curl -s -m 8 http://localhost:8081/api/health || echo FAIL"

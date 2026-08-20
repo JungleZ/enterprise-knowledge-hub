@@ -1,6 +1,10 @@
 services:
+  # 嵌入式 PostgreSQL(pgvector)。本地一键启动包含它；生产服务器若复用宿主 PG，
+  # 只需在 .env 中改为不设置 COMPOSE_PROFILES，并在 .env 里用 DATABASE_DSN 指向宿主库，
+  # 该服务即自动跳过（Compose ≥2.20 会忽略带未启用 profile 的依赖）。
   postgres:
     image: pgvector/pgvector:pg16
+    profiles: ["embedded-pg"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
@@ -33,7 +37,7 @@ services:
       dockerfile: Dockerfile
     environment:
       SERVER_PORT: "8080"
-      DATABASE_DSN: "postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/kb_hub?sslmode=disable"
+      DATABASE_DSN: "${DATABASE_DSN:-postgres://postgres:postgres@postgres:5432/kb_hub?sslmode=disable}"
       JWT_SECRET: "${JWT_SECRET:-change-me-in-production}"
       MEILI_HOST: "http://meilisearch:7700"
       MEILI_API_KEY: "${MEILI_API_KEY:-change-me-in-production}"

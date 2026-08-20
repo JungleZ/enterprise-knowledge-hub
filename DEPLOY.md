@@ -64,33 +64,39 @@ ssh root@<SERVER_IP> 'mkdir -p /opt/enterprise-knowledge-hub && tar xzf /tmp/ekh
 
 ## 3. 修改配置（重要：不能直接用本地默认值）
 
-远程文件：`/opt/enterprise-knowledge-hub/.env`
+远程文件：`/opt/enterprise-knowledge-hub/.env`（**用 `deploy.sh` 部署时自动生成，本节省略**；手工部署请按此步骤）
 
-新版 compose 的密钥全部走环境变量插值（`${VAR:-默认值}`），**不需要再改 docker-compose.yml 文本**，只需在服务器上创建 `.env`：
+新版 compose 的密钥全部走环境变量插值（`${VAR:-默认值}`），**不需要再改 docker-compose.yml 文本**，只需在服务器上创建 `.env`。服务器**复用宿主 PostgreSQL**：不要设 `COMPOSE_PROFILES`（嵌入式 pg 容器自动跳过），`DATABASE_DSN` 指向宿主库。
 
 ### 必须改的默认值
 
 | 项 | 默认值 | 改为 | 说明 |
 | --- | --- | --- | --- |
-| `POSTGRES_PASSWORD` | `change-me` | 随机 24 hex | 数据库密码（+容器内 postgres 密码） |
-| `JWT_SECRET` | `change-me-in-production` | 随机 48 hex | 会话签名密钥 |
-| `MEILI_MASTER_KEY` | `change-me-in-production` | 随机 48 hex | Meilisearch 主密钥 |
+| `DATABASE_DSN` | 指向嵌入式 pg | 指向宿主库 | `postgres://postgres:<宿主PG原密码>@127.0.0.1:5432/kb_hub?sslmode=disable`，**保持连接旧库、历史数据不丢** |
+| `COMPOSE_PROFILES` | `embedded-pg` | **删除该行** | 服务器不跑嵌入式 pg 容器 |
+| `JWT_SECRET` | `change-me-in-production` | 复用原密钥/随机 48 hex | 会话签名密钥 |
+| `MEILI_MASTER_KEY` | `change-me-in-production` | 复用原密钥/随机 48 hex | Meilisearch 主密钥（复用则历史索引保留） |
 | `MEILI_API_KEY` | `change-me-in-production` | 与 master 相同 | 后端访问 Meilisearch |
+| `LLM_API_KEY` | 空 | OpenRouter 密钥 | 原值在 `docker-compose.yml.bak` 里可提取 |
+| `WECOM_BOT_*` | 空 | 企微 BotID/Secret | 原值在 `docker-compose.yml.bak` 里可提取 |
 | `AUTH_ALLOW_REGISTER` | `true` | 首次初始化后可 `false` | 关闭公开自注册（企业内网建议） |
 | `SEED_DATA` | `true` | 首次初始化后可 `false` | 关闭演示数据自动创建 |
 
-在服务器上生成密钥并写入 `.env`（权限 600，仅 root 可读）： |
-
-生成密钥并写入 .env：
+生成密钥并写入 .env（或直接用 `deploy.sh` 自动完成本步）：
 
 ```bash
-PGPW=$(openssl rand -hex 12); JWTS=$(openssl rand -hex 24); MEILIKEY=$(openssl rand -hex 24)
+source /root/.ekh_secrets 2>/dev/null || {  # 不存在则生成
+  umask 077; printf 'PGPW=%s\nJWT_SECRET=%s\nMEILI_MASTER_KEY=%s\nMEILI_API_KEY=%s\n' \
+    $(openssl rand -hex 12) $(openssl rand -hex 24) $(openssl rand -hex 24) $(openssl rand -hex 24) > /root/.ekh_secrets
+  source /root/.ekh_secrets
+}
 umask 077
 cat > /opt/enterprise-knowledge-hub/.env <<EOF
+DATABASE_DSN=postgres://postgres:${PGPW}@127.0.0.1:5432/kb_hub?sslmode=disable
 POSTGRES_PASSWORD=$PGPW
-JWT_SECRET=$JWTS
-MEILI_MASTER_KEY=$MEILIKEY
-MEILI_API_KEY=$MEILIKEY
+JWT_SECRET=$JWT_SECRET
+MEILI_MASTER_KEY=$MEILI_MASTER_KEY
+MEILI_API_KEY=$MEILI_API_KEY
 LLM_API_KEY=<OpenRouter 密钥>
 WEB_SEARCH_API_KEY=<Tavily 密钥，可留空>
 BOT_PLATFORM=wecom
@@ -98,16 +104,9 @@ WECOM_BOT_ID=<企微 BotID>
 WECOM_BOT_SECRET=<企微 Secret>
 AUTH_ALLOW_REGISTER=false
 EOF
-cp -f /opt/enterprise-knowledge-hub/docker-compose.yml /opt/enterprise-knowledge-hub/docker-compose.yml.bak
-cat > /root/.ekh_secrets <<EOF
-PGPW=$PGPW
-JWT_SECRET=$JWTS
-MEILI_MASTER_KEY=$MEILIKEY
-MEILI_API_KEY=$MEILIKEY
-EOF
 ```
 
-> 密钥保存在 `/root/.ekh_secrets` 与 `/opt/enterprise-knowledge-hub/.env`（均 600 仅 root 可读）。**不要提交到 git、不要外泄。**
+> 宿主 PG 的密码通常是旧部署时写入 `/root/.ekh_secrets` 的 `PGPW`（该文件保留着，无需改）。`.env` 与 `/root/.ekh_secrets` 均 600 仅 root 可读。**不要提交到 git、不要外泄。**
 
 ### 端口（默认已避开服务器现有服务，通常无需改）
 
@@ -128,8 +127,10 @@ EOF
 cd /opt/enterprise-knowledge-hub
 docker compose build          # 首次构建需拉取基础镜像，可能 10-20 分钟
 docker compose up -d
-docker compose ps             # 4 个容器都应为 Up
+docker compose ps             # 服务器：3 个容器（postgres 因未启用 profile 自动跳过，宿主 PG 继续用）
 ```
+
+> 本地开发环境 .env 里有 `COMPOSE_PROFILES=embedded-pg`，会启动 4 个容器（含嵌入式 postgres）。服务器 .env 没有该项，故只起 meilisearch/backend/frontend 3 个。
 
 ---
 

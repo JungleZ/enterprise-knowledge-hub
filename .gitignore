@@ -3,6 +3,9 @@ backend/bin/
 backend/data/
 *.log
 
+# Packing
+*.tar.gz
+
 # Frontend
 frontend/node_modules/
 frontend/dist/
