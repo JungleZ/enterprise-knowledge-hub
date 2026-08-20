@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      POSTGRES_DB: kb_hub
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d kb_hub"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.8
+    environment:
+      MEILI_MASTER_KEY: "${MEILI_MASTER_KEY:-change-me-in-production}"
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meilidata:/meili_data
+    ports:
+      - "7701:7700"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      SERVER_PORT: "8080"
+      DATABASE_DSN: "postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/kb_hub?sslmode=disable"
+      JWT_SECRET: "${JWT_SECRET:-change-me-in-production}"
+      MEILI_HOST: "http://meilisearch:7700"
+      MEILI_API_KEY: "${MEILI_API_KEY:-change-me-in-production}"
+      DOCS_PATH: "/data/docs"
+      SEED_DATA: "${SEED_DATA:-true}"
+      # 同源反代(nginx /api)时无需 CORS；跨域部署时改为逗号分隔的允许来源
+      CORS_ORIGINS: ""
+      # 安全加固：注册开关（企业内网建议 false，管理员在后台添加成员）、登录失败锁定（服务端按邮箱）、密码最小长度
+      AUTH_ALLOW_REGISTER: "${AUTH_ALLOW_REGISTER:-true}"
+      AUTH_LOGIN_MAX_FAILURES: "5"
+      AUTH_LOGIN_LOCK_MINUTES: "15"
+      AUTH_MIN_PASSWORD_LEN: "8"
+      # 审计日志保留天数（每天清理一次）
+      AUDIT_RETENTION_DAYS: "180"
+      # embedding 分批与并发上限（防止大文档/并发上传打爆 API）
+      EMBED_BATCH_SIZE: "32"
+      EMBED_MAX_CONCURRENCY: "4"
+      # 可插拔 AI 配置。OpenRouter 只提供 LLM（无 embedding），故 LLM 走 OpenRouter、向量检索保持离线 BM25。
+      EMBEDDING_PROVIDER: ""
+      EMBEDDING_API_KEY: ""
+      EMBEDDING_MODEL: "BAAI/bge-m3"
+      EMBEDDING_BASE_URL: "https://api.siliconflow.cn/v1"
+      LLM_PROVIDER: "openrouter"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "openrouter/free"
+      LLM_BASE_URL: "https://openrouter.ai/api/v1"
+      # 联网搜索（Tavily 兼容契约）。WEB_SEARCH_ENABLED=false 时前端不显示「联网搜索」开关。
+      WEB_SEARCH_ENABLED: "false"
+      WEB_SEARCH_API_KEY: "${WEB_SEARCH_API_KEY:-}"
+      WEB_SEARCH_BASE_URL: "https://api.tavily.com/search"
+      WEB_SEARCH_MAX_RESULTS: "4"
+      # 飞书机器人（长连接模式，无需公网回调）。留空 = 机器人不启动。
+      # BOT_PLATFORM: "feishu"
+      # FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
+      # FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
+      # 企业微信智能机器人（长连接模式，无需公网回调）。
+      BOT_PLATFORM: "${BOT_PLATFORM:-wecom}"
+      WECOM_BOT_ID: "${WECOM_BOT_ID:-}"
+      WECOM_BOT_SECRET: "${WECOM_BOT_SECRET:-}"
+    volumes:
+      - docsdata:/data/docs
+    ports:
+      - "8081:8080"
+    depends_on:
+      meilisearch:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3002:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  meilidata:
+  docsdata:
