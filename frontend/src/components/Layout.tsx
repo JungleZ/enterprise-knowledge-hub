@@ -79,7 +79,7 @@ export default function Layout() {
       {/* desktop sidebar */}
       <aside className="hidden md:flex w-56 shrink-0 bg-gray-900 text-gray-300 flex-col">
         <div className="px-4 py-5 border-b border-gray-800">
-          <div className="text-white font-semibold text-sm">企业知识库</div>
+          <div className="text-white font-semibold text-sm">InnoRAG知识库</div>
           <div className="text-gray-500 text-xs mt-0.5 truncate">{tenant?.name}</div>
         </div>
         <nav className="flex-1 py-3 space-y-1 px-2 overflow-y-auto">
@@ -110,7 +110,7 @@ export default function Layout() {
           <Menu size={20} />
         </button>
         <div className="min-w-0 text-center">
-          <div className="text-white font-semibold text-sm leading-tight truncate">企业知识库</div>
+          <div className="text-white font-semibold text-sm leading-tight truncate">InnoRAG知识库</div>
           <div className="text-gray-500 text-[11px] truncate">{tenant?.name}</div>
         </div>
         <button
@@ -129,7 +129,7 @@ export default function Layout() {
           <aside className="absolute left-0 top-0 bottom-0 w-64 bg-gray-900 text-gray-300 flex flex-col shadow-2xl">
             <div className="px-4 py-4 border-b border-gray-800 flex items-center justify-between">
               <div className="min-w-0">
-                <div className="text-white font-semibold text-sm truncate">企业知识库</div>
+                <div className="text-white font-semibold text-sm truncate">InnoRAG知识库</div>
                 <div className="text-gray-500 text-xs mt-0.5 truncate">{tenant?.name}</div>
               </div>
               <button

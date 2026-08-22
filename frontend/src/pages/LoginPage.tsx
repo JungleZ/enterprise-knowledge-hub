@@ -36,7 +36,7 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
         <div className="bg-white rounded-xl shadow-xl p-6 md:p-8">
           <div className="text-center mb-6">
-            <h1 className="text-2xl font-bold text-gray-900">企业知识库</h1>
+            <h1 className="text-2xl font-bold text-gray-900">InnoRAG知识库</h1>
             <p className="text-sm text-gray-500 mt-1">
               {mode === 'login' ? '登录你的企业账号' : '创建企业账号'}
             </p>

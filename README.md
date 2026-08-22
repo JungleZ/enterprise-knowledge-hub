@@ -1,4 +1,4 @@
-# Enterprise Knowledge Hub
+# InnoRAG知识库
 
 多租户企业知识库 MVP：上传文档 → 分块 → 索引 → RAG 问答（带引用）→ 反馈闭环 + 管理后台。
 

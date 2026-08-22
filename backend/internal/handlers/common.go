@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -11,6 +12,9 @@ import (
 )
 
 func osIsNotExist(err error) bool { return os.IsNotExist(err) }
+
+// logWarn prints a non-fatal warning (kept consistent with services.logWarn).
+func logWarn(format string, args ...interface{}) { fmt.Printf("[warn] "+format+"\n", args...) }
 
 // auditLog writes an audit entry.
 func auditLog(tenantID, userID uuid.UUID, userName, action, detail string) {

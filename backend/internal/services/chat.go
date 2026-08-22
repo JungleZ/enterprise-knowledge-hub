@@ -18,21 +18,26 @@ import (
 var ErrNoAccess = errors.New("no access to this knowledge base")
 
 type ChatService struct {
-	search      *search.Service
-	embedder    llm.EmbeddingClient
-	answerer    llm.AnswerClient
-	reranker    *rerank.Client
-	web         *WebSearchClient
-	maxChunks   int
+	search        *search.Service
+	embedder      llm.EmbeddingClient
+	answerer      llm.AnswerClient
+	reranker      *rerank.Client
+	web           *WebSearchClient
+	maxChunks     int
+	missThreshold float64
 }
 
-func NewChatService(searchSvc *search.Service, embedder llm.EmbeddingClient, answerer llm.AnswerClient, reranker *rerank.Client) *ChatService {
+func NewChatService(searchSvc *search.Service, embedder llm.EmbeddingClient, answerer llm.AnswerClient, reranker *rerank.Client, missThreshold float64) *ChatService {
+	if missThreshold <= 0 {
+		missThreshold = 0.25
+	}
 	return &ChatService{
-		search:    searchSvc,
-		embedder:  embedder,
-		answerer:  answerer,
-		reranker:  reranker,
-		maxChunks: 6,
+		search:        searchSvc,
+		embedder:      embedder,
+		answerer:      answerer,
+		reranker:      reranker,
+		maxChunks:     6,
+		missThreshold: missThreshold,
 	}
 }
 
@@ -153,9 +158,23 @@ func (s *ChatService) askPrep(in AskInput) (*AskStream, error) {
 		return nil, err
 	}
 
+	// 2) relevance gate: a question is "missed" when retrieval returns nothing
+	// or the best chunk's original relevance is below the configured threshold.
+	// Below threshold we drop the weak chunks so the LLM isn't misled into
+	// hallucinating an answer from barely-related text.
+	bestRaw := 0.0
+	for _, h := range hits {
+		if h.RawScore > bestRaw {
+			bestRaw = h.RawScore
+		}
+	}
+	isMissed := len(hits) == 0 || bestRaw < s.missThreshold
+	if isMissed {
+		hits = nil
+	}
+
 	var citations []models.Citation
 	chunkCtx := make([]llm.ContextChunk, 0, len(hits))
-	isMissed := len(hits) == 0
 
 	if in.WebSearch && s.web != nil && s.web.Enabled() {
 		results, err := s.web.Search(context.Background(), question)
@@ -410,6 +429,7 @@ func (s *ChatService) vectorSearch(tenantID uuid.UUID, kbID, query string, visib
 		if err := rows.Scan(&r.ID, &r.KBID, &r.DocID, &r.ChunkIndex, &r.Page, &r.Title, &r.Text, &r.Score); err != nil {
 			continue
 		}
+		r.RawScore = r.Score
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -427,27 +447,35 @@ func rrfMerge(a, b []search.SearchResult, limit int64) []search.SearchResult {
 	type entry struct {
 		hit   search.SearchResult
 		score float64
+		raw   float64
 	}
 	m := map[string]*entry{}
 	var order []string
 	for i, h := range a {
 		if _, ok := m[h.ID]; !ok {
-			m[h.ID] = &entry{hit: h}
+			m[h.ID] = &entry{hit: h, raw: h.RawScore}
 			order = append(order, h.ID)
 		}
 		m[h.ID].score += 1.0 / (60 + float64(i))
+		if h.RawScore > m[h.ID].raw {
+			m[h.ID].raw = h.RawScore
+		}
 	}
 	for i, h := range b {
 		if _, ok := m[h.ID]; !ok {
-			m[h.ID] = &entry{hit: h}
+			m[h.ID] = &entry{hit: h, raw: h.RawScore}
 			order = append(order, h.ID)
 		}
 		m[h.ID].score += 1.0 / (60 + float64(i))
+		if h.RawScore > m[h.ID].raw {
+			m[h.ID].raw = h.RawScore
+		}
 	}
 	out := make([]search.SearchResult, 0, len(order))
 	for _, id := range order {
 		e := m[id]
 		e.hit.Score = e.score
+		e.hit.RawScore = e.raw
 		out = append(out, e.hit)
 	}
 	if int64(len(out)) > limit {

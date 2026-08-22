@@ -184,6 +184,11 @@ type Hit struct {
 type SearchResult struct {
 	Hit
 	Score float64
+	// RawScore preserves the original relevance (Meili ranking score for BM25
+	// hits, cosine similarity for vector hits) before RRF merging normalizes it.
+	// Used by the chat service to decide whether retrieval actually answered
+	// the question (miss detection threshold).
+	RawScore float64
 }
 
 // Search performs BM25 full-text retrieval with tenant/visibility filtering.
@@ -325,8 +330,9 @@ func cjkBigrams(q string) []string {
 
 func (s *Service) searchOnce(filter, query string, limit int64) ([]SearchResult, error) {
 	req := &meilisearch.SearchRequest{
-		Filter: filter,
-		Limit:  limit,
+		Filter:           filter,
+		Limit:            limit,
+		ShowRankingScore: true,
 		AttributesToRetrieve: []string{
 			"id", "kb_id", "doc_id", "chunk_index", "page", "title", "text", "visibility",
 		},
@@ -341,7 +347,13 @@ func (s *Service) searchOnce(filter, query string, limit int64) ([]SearchResult,
 		if err := h.DecodeInto(&m); err != nil {
 			continue
 		}
+		// Use Meilisearch's real BM25 ranking score (0..1) instead of a fixed
+		// placeholder so citation scores are meaningful; fall back to 0.5.
 		hit := SearchResult{Score: 0.5}
+		if v, ok := m["_rankingScore"].(float64); ok {
+			hit.Score = v
+			hit.RawScore = v
+		}
 		if id, ok := m["id"].(string); ok {
 			hit.ID = id
 		}

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"os"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -9,11 +10,14 @@ import (
 	"github.com/enterprise-kb/backend/internal/database"
 	"github.com/enterprise-kb/backend/internal/middleware"
 	"github.com/enterprise-kb/backend/internal/models"
+	"github.com/enterprise-kb/backend/internal/search"
 )
 
-type KBHandler struct{}
+type KBHandler struct {
+	search *search.Service
+}
 
-func NewKBHandler() *KBHandler { return &KBHandler{} }
+func NewKBHandler(searchSvc *search.Service) *KBHandler { return &KBHandler{search: searchSvc} }
 
 type kbInput struct {
 	Name               string `json:"name"`
@@ -104,10 +108,25 @@ func (h *KBHandler) Delete(c *fiber.Ctx) error {
 	if err := database.DB.First(&kb, "id = ? AND tenant_id = ?", id, user.TenantID).Error; err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "not found"})
 	}
-	// cascade chunks + docs
-	database.DB.Where("kb_id = ? AND tenant_id = ?", id, user.TenantID).Delete(&models.Chunk{})
+	// Fetch docs first so we can remove their files from disk too.
 	var docs []models.Document
 	database.DB.Where("kb_id = ? AND tenant_id = ?", id, user.TenantID).Find(&docs)
+
+	// Clean up the Meilisearch index (otherwise deleted-KB chunks still surface
+	// in tenant-wide search) and remove the source files from disk.
+	if h.search != nil {
+		if err := h.search.DeleteByKBID(id); err != nil {
+			logWarn("meili delete by kb %s failed: %v", id, err)
+		}
+	}
+	for _, d := range docs {
+		if err := os.Remove(d.Filename); err != nil && !osIsNotExist(err) {
+			logWarn("remove doc file %s failed: %v", d.Filename, err)
+		}
+	}
+
+	// cascade chunks + docs in PostgreSQL
+	database.DB.Where("kb_id = ? AND tenant_id = ?", id, user.TenantID).Delete(&models.Chunk{})
 	for _, d := range docs {
 		database.DB.Delete(&d)
 	}

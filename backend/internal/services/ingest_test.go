@@ -2,6 +2,7 @@ package services
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -14,7 +15,7 @@ func TestChunkText_EmptyAndShort(t *testing.T) {
 
 	short := "只有一句话。"
 	got := s.ChunkText(short, 0, 0)
-	if len(got) != 1 || got[0] != short {
+	if len(got) != 1 || got[0].Text != short {
 		t.Errorf("short text should stay as one chunk, got %#v", got)
 	}
 }
@@ -33,7 +34,7 @@ func TestChunkText_OverlapAndMerge(t *testing.T) {
 	}
 	// every chunk respects size limit
 	for i, c := range chunks {
-		if runes := len([]rune(c)); runes > 1000 {
+		if runes := len([]rune(c.Text)); runes > 1000 {
 			t.Errorf("chunk %d exceeds hard limit: %d runes", i, runes)
 		}
 	}
@@ -45,8 +46,8 @@ func TestChunkText_OverlapAndMerge(t *testing.T) {
 		t.Fatalf("four short paragraphs should merge into 1 chunk, got %d", len(got))
 	}
 	for _, want := range []string{"第一段内容。", "第二段内容。", "第三段内容。", "第四段内容。"} {
-		if !containsStr(got[0], want) {
-			t.Errorf("merged chunk missing %q: %q", want, got[0])
+		if !containsStr(got[0].Text, want) {
+			t.Errorf("merged chunk missing %q: %q", want, got[0].Text)
 		}
 	}
 }
@@ -54,8 +55,46 @@ func TestChunkText_OverlapAndMerge(t *testing.T) {
 func TestChunkText_BlankLinesDropped(t *testing.T) {
 	s := NewIngestService("", nil, nil)
 	got := s.ChunkText("\n\n\n\n第一行\n\n\n\n", 10, 0)
-	if len(got) != 1 || got[0] != "第一行" {
+	if len(got) != 1 || got[0].Text != "第一行" {
 		t.Errorf("blank lines should be dropped, got %#v", got)
+	}
+}
+
+// Consecutive chunks must share a real trailing overlap so boundary sentences
+// are not lost on either side.
+func TestChunkText_TrueOverlap(t *testing.T) {
+	s := NewIngestService("", nil, nil)
+	p := strings.Repeat("甲", 40)
+	q := strings.Repeat("乙", 40)
+	r := strings.Repeat("丙", 40)
+	chunks := s.ChunkText(p+"\n"+q+"\n"+r, 50, 10)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+	prev := []rune(chunks[0].Text)
+	tail := string(prev[len(prev)-10:])
+	if !strings.HasPrefix(chunks[1].Text, tail) {
+		t.Errorf("chunk 1 should start with overlap tail of chunk 0\nchunk0 tail: %q\nchunk1: %q", tail, chunks[1].Text)
+	}
+}
+
+// Chinese section headings should be detected and attached to the chunks that
+// fall under them, so the embedding context prefix knows the section.
+func TestChunkText_HeadingTracked(t *testing.T) {
+	s := NewIngestService("", nil, nil)
+	text := "一、申报条件\n申请人为天河区注册企业。\n二、申报材料\n需提交营业执照。"
+	chunks := s.ChunkText(text, 20, 0)
+	found := false
+	for _, c := range chunks {
+		if containsStr(c.Text, "营业执照") {
+			if c.Heading != "二、申报材料" {
+				t.Errorf("chunk heading = %q, want %q", c.Heading, "二、申报材料")
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no chunk contains 营业执照: %#v", chunks)
 	}
 }
 

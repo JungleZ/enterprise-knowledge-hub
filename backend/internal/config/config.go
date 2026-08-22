@@ -20,8 +20,9 @@ type Config struct {
 	Embedding    EmbeddingConfig
 	Rerank       RerankConfig
 	Contact      ContactConfig
-	SeedData     bool
-	ServerURL    string
+	SeedData      bool
+	ServerURL     string
+	MissThreshold float64
 }
 
 type ServerConfig struct {
@@ -164,6 +165,11 @@ func Load() *Config {
 		},
 		SeedData:  getEnvBool("SEED_DATA", true),
 		ServerURL: getEnv("SERVER_URL", "http://localhost:8080"),
+		// MissThreshold is the minimum retrieval relevance (max of BM25
+		// ranking score and vector cosine similarity) for a question to be
+		// considered answered. Below it, the answer is treated as a miss so
+		// off-topic questions don't get hallucinated from weak chunks.
+		MissThreshold: getEnvFloat("MISS_THRESHOLD", 0.25),
 		Auth: AuthConfig{
 			RegisterEnabled:  getEnvBool("AUTH_ALLOW_REGISTER", true),
 			LoginMaxFailures: getEnvInt("AUTH_LOGIN_MAX_FAILURES", 5),
@@ -224,6 +230,15 @@ func getEnvBool(key string, fallback bool) bool {
 	if val := os.Getenv(key); val != "" {
 		if b, err := strconv.ParseBool(val); err == nil {
 			return b
+		}
+	}
+	return fallback
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	if val := os.Getenv(key); val != "" {
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f
 		}
 	}
 	return fallback

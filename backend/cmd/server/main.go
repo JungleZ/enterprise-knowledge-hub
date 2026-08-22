@@ -66,7 +66,7 @@ func main() {
 	ingestSvc := services.NewIngestService(cfg.Storage.DocsPath, searchSvc, embedder)
 	ingestSvc.Configure(cfg.Embedding.BatchSize, cfg.Embedding.MaxConcurrent)
 
-	chatSvc := services.NewChatService(searchSvc, embedder, answerer, rerank.New(cfg.Rerank))
+	chatSvc := services.NewChatService(searchSvc, embedder, answerer, rerank.New(cfg.Rerank), cfg.MissThreshold)
 	chatSvc.SetWebSearch(services.NewWebSearchClient(
 		cfg.WebSearch.Enabled, cfg.WebSearch.APIKey, cfg.WebSearch.BaseURL, cfg.WebSearch.MaxCount,
 	))
@@ -79,7 +79,7 @@ func main() {
 	}
 
 	authHandler := handlers.NewAuthHandler(authSvc)
-	kbHandler := handlers.NewKBHandler()
+	kbHandler := handlers.NewKBHandler(searchSvc)
 	docHandler := handlers.NewDocHandler(ingestSvc)
 	chatHandler := handlers.NewChatHandler(chatSvc)
 	adminHandler := handlers.NewAdminHandler(adminSvc, cfg)

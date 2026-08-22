@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -135,21 +136,10 @@ func csvToText(r io.Reader) string {
 
 // ---------- DOCX ----------
 
-type docxDocument struct {
-	XMLName xml.Name `xml:"document"`
-	Body    struct {
-		Paragraphs []docxParagraph `xml:"p"`
-	} `xml:"body"`
-}
-
-type docxParagraph struct {
-	Texts []docxText `xml:"r"`
-}
-
-type docxText struct {
-	Text string `xml:"t"`
-}
-
+// parseDocx extracts plain text from a .docx, preserving paragraphs and table
+// rows. Tables (w:tbl) are flattened to "cell | cell | cell" lines so tabular
+// policy content survives chunking instead of being dropped. Uses a streaming
+// decoder so we can see table structure, not just top-level paragraphs.
 func parseDocx(path string) (string, error) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
@@ -171,35 +161,82 @@ func parseDocx(path string) (string, error) {
 		return "", err
 	}
 	defer rc.Close()
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return "", err
-	}
-	var doc docxDocument
-	if err := xml.Unmarshal(data, &doc); err != nil {
-		return "", err
-	}
+
+	dec := xml.NewDecoder(rc)
 	var sb strings.Builder
-	for _, p := range doc.Body.Paragraphs {
-		for _, t := range p.Texts {
-			sb.WriteString(t.Text)
+	var cur strings.Builder // text of the current paragraph or table cell
+	var cells []string      // cell texts of the current table row
+	inTable := false
+	inCell := false
+	flushPara := func() {
+		if !inTable {
+			if t := strings.TrimSpace(cur.String()); t != "" {
+				sb.WriteString(t)
+				sb.WriteString("\n")
+			}
 		}
-		sb.WriteString("\n")
+		cur.Reset()
+	}
+
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		switch el := tok.(type) {
+		case xml.StartElement:
+			switch el.Name.Local {
+			case "tbl":
+				inTable = true
+			case "tc":
+				inCell = true
+				cur.Reset()
+			}
+		case xml.CharData:
+			cur.Write(el)
+		case xml.EndElement:
+			switch el.Name.Local {
+			case "p":
+				if inCell {
+					cur.WriteString(" ") // keep multi-paragraph cells readable
+				} else {
+					flushPara()
+				}
+			case "tc":
+				inCell = false
+				cells = append(cells, strings.TrimSpace(cur.String()))
+				cur.Reset()
+			case "tr":
+				if len(cells) > 0 {
+					sb.WriteString(strings.Join(cells, " | "))
+					sb.WriteString("\n")
+				}
+				cells = cells[:0]
+			case "tbl":
+				inTable = false
+			}
+		}
 	}
 	return sb.String(), nil
 }
 
 // ---------- Chunking ----------
 
-// chunkSeg is a chunk together with the 1-based page it starts on (0 = unknown).
+// chunkSeg is a chunk together with the 1-based page it starts on (0 = unknown)
+// and the nearest section heading it falls under ("" when none detected).
 type chunkSeg struct {
-	Text string
-	Page int
+	Text    string
+	Page    int
+	Heading string
 }
 
-// ChunkText splits text into overlapping chunks at paragraph boundaries while
-// tracking the source page (via pageBreak markers inserted by paginated
-// parsers such as parsePDF). Non-paginated sources yield Page = 0.
+// ChunkText splits text into chunks at paragraph boundaries while tracking the
+// source page (via pageBreak markers inserted by paginated parsers such as
+// parsePDF) and the nearest section heading. Consecutive chunks share a true
+// trailing overlap so a sentence cut at a chunk boundary is not lost.
 func (s *IngestService) ChunkText(text string, size, overlap int) []chunkSeg {
 	if size <= 0 {
 		size = s.chunkSize
@@ -213,11 +250,13 @@ func (s *IngestService) ChunkText(text string, size, overlap int) []chunkSeg {
 
 	hasPages := strings.Contains(text, pageBreak)
 	type para struct {
-		text string
-		page int
+		text    string
+		page    int
+		heading string
 	}
 	var paras []para
 	ffCount := 0
+	curHeading := ""
 	for _, p := range strings.Split(text, "\n") {
 		p = strings.TrimSpace(p)
 		if p == "" {
@@ -227,12 +266,40 @@ func (s *IngestService) ChunkText(text string, size, overlap int) []chunkSeg {
 		if hasPages {
 			page = ffCount + 1
 		}
-		paras = append(paras, para{p, page})
+		if h := detectHeading(strings.ReplaceAll(p, pageBreak, "")); h != "" {
+			curHeading = h
+		}
+		paras = append(paras, para{p, page, curHeading})
 		ffCount += strings.Count(p, pageBreak)
 	}
+	if len(paras) == 0 {
+		return nil
+	}
 
+	// Pack paragraphs into blocks at paragraph boundaries. Oversized single
+	// blocks are force-split with their own sliding overlap (marked so we don't
+	// double-apply the inter-block overlap below).
 	var blocks []chunkSeg
-	var cur chunkSeg
+	var fromSplit []bool
+	var cur strings.Builder
+	curPage, curHead := 0, ""
+	flush := func() {
+		t := strings.TrimSpace(cur.String())
+		cur.Reset()
+		if t == "" {
+			return
+		}
+		if rb := []rune(t); len(rb) > size*2 {
+			for _, w := range splitLongSeg(rb, size, overlap, curPage, curHead) {
+				blocks = append(blocks, w)
+				fromSplit = append(fromSplit, true)
+			}
+			return
+		}
+		blocks = append(blocks, chunkSeg{Text: t, Page: curPage, Heading: curHead})
+		fromSplit = append(fromSplit, false)
+	}
+
 	for _, pr := range paras {
 		for si, sub := range strings.Split(pr.text, pageBreak) {
 			sub = strings.TrimSpace(sub)
@@ -243,50 +310,41 @@ func (s *IngestService) ChunkText(text string, size, overlap int) []chunkSeg {
 			if hasPages && si > 0 {
 				sp = pr.page + si
 			}
-			if cur.Text != "" {
-				cur.Text += "\n"
+			if cur.Len() == 0 {
+				curPage, curHead = sp, pr.heading
 			}
-			cur.Text += sub
-			cur.Page = sp
-			if utf8.RuneCountInString(cur.Text) >= size {
-				blocks = append(blocks, cur)
-				cur = chunkSeg{}
+			if cur.Len() > 0 && utf8.RuneCountInString(cur.String()+"\n"+sub) > size {
+				flush()
+				curPage, curHead = sp, pr.heading
+				cur.WriteString(sub)
+			} else {
+				if cur.Len() > 0 {
+					cur.WriteString("\n")
+				}
+				cur.WriteString(sub)
 			}
 		}
 	}
-	if cur.Text != "" {
-		blocks = append(blocks, cur)
-	}
+	flush()
 
-	if len(blocks) == 1 {
-		rb := []rune(blocks[0].Text)
-		if len(rb) > size*2 {
-			return splitLongSeg(rb, size, overlap, blocks[0].Page)
-		}
-		return blocks
-	}
-
-	// merge small blocks, then re-split oversized blocks with overlap
-	var merged []chunkSeg
-	for _, b := range blocks {
-		rb := []rune(b.Text)
-		if len(rb) > size*2 {
-			merged = append(merged, splitLongSeg(rb, size, overlap, b.Page)...)
-			continue
-		}
-		if len(merged) > 0 {
-			last := merged[len(merged)-1]
-			if utf8.RuneCountInString(last.Text)+utf8.RuneCountInString(b.Text) <= size+overlap {
-				merged[len(merged)-1] = chunkSeg{Text: last.Text + "\n" + b.Text, Page: last.Page}
+	// True inter-chunk overlap: prepend the trailing `overlap` runes of the
+	// previous block to each block (skipped for force-split blocks, which
+	// already carry their own overlap).
+	if overlap > 0 {
+		for i := 1; i < len(blocks); i++ {
+			if fromSplit[i] || fromSplit[i-1] {
 				continue
 			}
+			prev := []rune(blocks[i-1].Text)
+			if len(prev) > overlap {
+				blocks[i].Text = string(prev[len(prev)-overlap:]) + "\n" + blocks[i].Text
+			}
 		}
-		merged = append(merged, b)
 	}
-	return merged
+	return blocks
 }
 
-func splitLongSeg(rs []rune, size, overlap, page int) []chunkSeg {
+func splitLongSeg(rs []rune, size, overlap, page int, heading string) []chunkSeg {
 	var out []chunkSeg
 	start := 0
 	for start < len(rs) {
@@ -294,13 +352,51 @@ func splitLongSeg(rs []rune, size, overlap, page int) []chunkSeg {
 		if end > len(rs) {
 			end = len(rs)
 		}
-		out = append(out, chunkSeg{Text: string(rs[start:end]), Page: page})
+		out = append(out, chunkSeg{Text: string(rs[start:end]), Page: page, Heading: heading})
 		if end == len(rs) {
 			break
 		}
 		start = end - overlap
 	}
 	return out
+}
+
+var (
+	reChapter = regexp.MustCompile(`^第[0-9一二三四五六七八九十百千万]+[章节条款部分编回]`)
+	reCnEnum  = regexp.MustCompile(`^[一二三四五六七八九十]+、`)
+	reCnParen = regexp.MustCompile(`^[（(][一二三四五六七八九十0-9]+[)）]`)
+	reNumEnum = regexp.MustCompile(`^\d+(\.\d+)*[、.\s]`)
+)
+
+// detectHeading returns the heading text when a paragraph looks like a section
+// heading (markdown "#" or common Chinese numbering), else "". Conservative —
+// only short lines qualify, to avoid treating body text as a heading.
+func detectHeading(s string) string {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return ""
+	}
+	if strings.HasPrefix(t, "#") {
+		return strings.TrimSpace(strings.TrimLeft(t, "#"))
+	}
+	if len([]rune(t)) > 40 {
+		return ""
+	}
+	if reChapter.MatchString(t) || reCnEnum.MatchString(t) || reCnParen.MatchString(t) || reNumEnum.MatchString(t) {
+		return t
+	}
+	return ""
+}
+
+// contextPrefix prefixes a chunk with its document title (and section heading
+// when detected) so the embedding captures which document/section the chunk
+// belongs to — a large retrieval-quality win for long, multi-section policy
+// documents. BM25 already indexes the title field, so this targets vectors.
+func contextPrefix(title, heading string) string {
+	if heading != "" && heading != title {
+		return title + " > " + heading + "\n"
+	}
+	return title + "\n"
 }
 
 // ---------- Indexing pipeline ----------
@@ -320,8 +416,15 @@ func (s *IngestService) ProcessDocument(doc *models.Document) error {
 	segs := s.ChunkText(text, s.chunkSize, s.chunkOverlap)
 	visibility := visibilityFromTags(doc.AccessTags)
 
+	title := doc.Title
+	if title == "" {
+		title = doc.Filename
+	}
+
 	// optional embeddings (batched to respect provider request size limits,
-	// throttled by a semaphore so concurrent uploads don't hammer the API)
+	// throttled by a semaphore so concurrent uploads don't hammer the API).
+	// Each chunk is embedded with a doc/section context prefix so vector recall
+	// knows which document and section it came from.
 	vectors := make(map[string][]float32)
 	if s.embedder.Enabled() {
 		s.embedSem <- struct{}{}
@@ -333,7 +436,7 @@ func (s *IngestService) ProcessDocument(doc *models.Document) error {
 			}
 			texts := make([]string, 0, end-i)
 			for _, seg := range segs[i:end] {
-				texts = append(texts, seg.Text)
+				texts = append(texts, contextPrefix(title, seg.Heading)+seg.Text)
 			}
 			embeds, err := s.embedder.Embed(context.Background(), texts)
 			if err != nil {
@@ -347,11 +450,6 @@ func (s *IngestService) ProcessDocument(doc *models.Document) error {
 				}
 			}
 		}
-	}
-
-	title := doc.Title
-	if title == "" {
-		title = doc.Filename
 	}
 
 	chunkModels := make([]models.Chunk, 0, len(segs))
