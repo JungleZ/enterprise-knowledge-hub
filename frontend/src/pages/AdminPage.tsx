@@ -32,7 +32,7 @@ function StatCard({
   return (
     <button
       onClick={onClick}
-      className="card p-4 text-left hover:shadow-md hover:border-brand-200 transition-all cursor-pointer group"
+      className="card p-4 text-left hover:shadow-md hover:border-brand-200 transition-all cursor-pointer active:scale-[0.98] group"
       title={hint || '点击查看详情'}
     >
       {content}

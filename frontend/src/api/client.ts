@@ -53,6 +53,8 @@ export interface Citation {
   score: number
   chunk_text?: string
   chunk_index?: number
+  // Page is the 1-based page number in the source document (0/undefined = unknown).
+  page?: number
   url?: string
 }
 
@@ -346,7 +348,7 @@ export const api = {
     audit: (limit = 50) => request<AuditLog[]>(`/admin/audit?limit=${limit}`),
     gaps: () => request<Gap[]>('/admin/gaps'),
     feedback: () => request<ChatMessage[]>('/admin/feedback'),
-    contact: () => request<{ admins: ContactAdmin[] }>('/contacts/admins'),
+    contact: () => request<{ admins: ContactAdmin[]; contact_link?: string; contact_text?: string }>('/contacts/admins'),
     sessions: () => request<SessionWithMeta[]>('/admin/sessions'),
     sessionMessages: (sessionId: string) => request<ChatMessage[]>(`/admin/sessions/${sessionId}/messages`),
   },

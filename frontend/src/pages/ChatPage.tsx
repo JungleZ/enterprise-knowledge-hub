@@ -28,13 +28,22 @@ export default function ChatPage() {
   const [webSearch, setWebSearch] = useState(false)
   const [sending, setSending] = useState(false)
   const [contacts, setContacts] = useState<ContactAdmin[]>([])
+  const [contactLink, setContactLink] = useState('')
+  const [contactText, setContactText] = useState('')
   const [showSessions, setShowSessions] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     api.chat.sessions().then(setSessions).catch(() => {})
     api.kbs.list().then(setKbs).catch(() => {})
-    api.admin.contact().then((r) => setContacts(r.admins)).catch(() => {})
+    api.admin
+      .contact()
+      .then((r) => {
+        setContacts(r.admins || [])
+        setContactLink(r.contact_link || '')
+        setContactText(r.contact_text || '')
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -305,9 +314,11 @@ export default function ChatPage() {
                                     >
                                       {c.doc_title}
                                     </Link>
-                                    {typeof c.chunk_index === 'number' && (
-                                      <span className="text-gray-400 shrink-0">第 {c.chunk_index + 1} 段</span>
-                                    )}
+        {typeof c.chunk_index === 'number' && (
+          <span className="text-gray-400 shrink-0">
+            {typeof c.page === 'number' && c.page > 0 ? `第 ${c.page} 页 · ` : ''}第 {c.chunk_index + 1} 段
+          </span>
+        )}
                                   </div>
                                 )}
                                 <div className="text-gray-500 mt-1 line-clamp-2">{c.snippet}</div>
@@ -331,19 +342,31 @@ export default function ChatPage() {
                               <Globe size={14} />
                               联网搜索重试
                             </button>
-                            {contacts.length > 0 && (
-                              <>
-                                <span className="text-gray-400">·</span>
-                                <a
-                                  href={`mailto:${contacts[0].email}?subject=知识库未命中反馈&body=问题：${encodeURIComponent(
-                                    findQuestionFor(m),
-                                  )}%0A%0A请补充相关知识库内容，谢谢！`}
-                                  className="inline-flex items-center gap-1.5 btn-ghost !py-1.5 text-xs"
-                                >
-                                  <Mail size={14} />
-                                  联系管理员（{contacts[0].name}）
-                                </a>
-                              </>
+                            {contactLink ? (
+                              <a
+                                href={contactLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 btn-ghost !py-1.5 text-xs"
+                              >
+                                <Mail size={14} />
+                                {contactText || '联系管理员'}
+                              </a>
+                            ) : (
+                              contacts.length > 0 && (
+                                <>
+                                  <span className="text-gray-400">·</span>
+                                  <a
+                                    href={`mailto:${contacts[0].email}?subject=知识库未命中反馈&body=问题：${encodeURIComponent(
+                                      findQuestionFor(m),
+                                    )}%0A%0A请补充相关知识库内容，谢谢！`}
+                                    className="inline-flex items-center gap-1.5 btn-ghost !py-1.5 text-xs"
+                                  >
+                                    <Mail size={14} />
+                                    联系管理员（{contacts[0].name}）
+                                  </a>
+                                </>
+                              )
                             )}
                           </div>
                         </div>
@@ -423,7 +446,7 @@ export default function ChatPage() {
                   }
                 }}
               />
-              <button onClick={() => send()} disabled={sending || !input.trim()} className="btn-primary shrink-0 self-end">
+              <button onClick={() => send()} disabled={sending || !input.trim()} className="btn-primary shrink-0 self-stretch px-4">
                 <Send size={16} />
                 发送
               </button>
