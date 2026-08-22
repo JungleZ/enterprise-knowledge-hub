@@ -158,17 +158,23 @@ func (s *ChatService) askPrep(in AskInput) (*AskStream, error) {
 		return nil, err
 	}
 
-	// 2) relevance gate: a question is "missed" when retrieval returns nothing
-	// or the best chunk's original relevance is below the configured threshold.
-	// Below threshold we drop the weak chunks so the LLM isn't misled into
-	// hallucinating an answer from barely-related text.
+	// 2) relevance gate: when semantic (vector) search is enabled its cosine
+	// similarity is a well-calibrated relevance signal, so a question whose
+	// best chunk scores below the threshold is treated as unanswered — this
+	// stops off-topic questions from being answered with weakly-related
+	// chunks. With BM25-only the ranking score from CJK query expansion is
+	// not calibrated enough to gate on (legit and off-topic matches overlap),
+	// so we only fall back to the stricter "no hits at all" rule.
 	bestRaw := 0.0
 	for _, h := range hits {
 		if h.RawScore > bestRaw {
 			bestRaw = h.RawScore
 		}
 	}
-	isMissed := len(hits) == 0 || bestRaw < s.missThreshold
+	isMissed := len(hits) == 0
+	if s.embedder.Enabled() && len(hits) > 0 && bestRaw < s.missThreshold {
+		isMissed = true
+	}
 	if isMissed {
 		hits = nil
 	}
