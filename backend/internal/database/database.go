@@ -16,11 +16,24 @@ import (
 var DB *gorm.DB
 
 func Connect(dsn string) *gorm.DB {
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Warn),
-	})
+	// Retry for a while: the embedded postgres container (local one-click) may
+	// still be starting when the backend comes up. On prod the DSN points to an
+	// already-running host DB, so the first attempt usually succeeds.
+	const attempts = 10
+	var db *gorm.DB
+	var err error
+	for i := 1; i <= attempts; i++ {
+		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+			Logger: logger.Default.LogMode(logger.Warn),
+		})
+		if err == nil {
+			break
+		}
+		log.Printf("database connection attempt %d/%d failed: %v", i, attempts, err)
+		time.Sleep(3 * time.Second)
+	}
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		log.Fatalf("failed to connect to database after %d attempts: %v", attempts, err)
 	}
 
 	sqlDB, err := db.DB()
