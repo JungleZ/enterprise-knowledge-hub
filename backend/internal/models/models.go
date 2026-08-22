@@ -130,6 +130,7 @@ type Chunk struct {
 	KBID       uuid.UUID `gorm:"type:uuid;not null;index" json:"kb_id"`
 	DocID      uuid.UUID `gorm:"type:uuid;not null;index" json:"doc_id"`
 	ChunkIndex int       `json:"chunk_index"`
+	Page       int       `json:"page"` // 1-based page in source doc (0 = unknown / not applicable)
 	Text       string    `gorm:"type:text;not null" json:"text"`
 	Title      string    `json:"title"`
 	// Visibility list for retrieval filter. e.g. ["public"] or ["研发","财务"]
@@ -162,6 +163,8 @@ type Citation struct {
 	ChunkText string `json:"chunk_text,omitempty"`
 	// ChunkIndex is the position of the chunk inside its document (0-based).
 	ChunkIndex int `json:"chunk_index"`
+	// Page is the 1-based page number inside the source document (0 = unknown).
+	Page int `json:"page,omitempty"`
 	// URL is set for web-search citations (联网搜索来源), empty for KB docs.
 	URL string `json:"url,omitempty"`
 }

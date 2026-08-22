@@ -18,6 +18,8 @@ type Config struct {
 	Auth         AuthConfig
 	Audit        AuditConfig
 	Embedding    EmbeddingConfig
+	Rerank       RerankConfig
+	Contact      ContactConfig
 	SeedData     bool
 	ServerURL    string
 }
@@ -106,6 +108,28 @@ type EmbeddingConfig struct {
 	MaxConcurrent int
 }
 
+// RerankConfig optionally re-ranks hybrid retrieval candidates with a
+// cross-encoder before they are fed to the LLM. Empty Provider = disabled
+// (the existing RRF-merged results are used as-is, fully backward compatible).
+// OpenAI-compatible providers (e.g. SiliconFlow bge-reranker-v2-m3) and Cohere
+// are supported.
+type RerankConfig struct {
+	Enabled  bool
+	Provider string // "siliconflow" | "cohere" | "" (disabled)
+	APIKey   string
+	Model    string
+	BaseURL  string
+	TopN     int // keep top-N after rerank (0 = keep all)
+}
+
+// ContactConfig is an optional, admin-configured entry point shown on the
+// chat page when an answer is not found in the knowledge base. A link is more
+// reliable than mailto on mobile clients.
+type ContactConfig struct {
+	Link string // e.g. https://your-helpdesk.example.com  (empty = hidden)
+	Text string // label shown on the button (empty = "联系管理员")
+}
+
 func Load() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -152,6 +176,18 @@ func Load() *Config {
 		Embedding: EmbeddingConfig{
 			BatchSize:     getEnvInt("EMBED_BATCH_SIZE", 32),
 			MaxConcurrent: getEnvInt("EMBED_MAX_CONCURRENCY", 4),
+		},
+		Rerank: RerankConfig{
+			Enabled:  getEnvBool("RERANK_ENABLED", false),
+			Provider: getEnv("RERANK_PROVIDER", ""),
+			APIKey:   getEnv("RERANK_API_KEY", ""),
+			Model:    getEnv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"),
+			BaseURL:  getEnv("RERANK_BASE_URL", "https://api.siliconflow.cn/v1"),
+			TopN:     getEnvInt("RERANK_TOP_N", 4),
+		},
+		Contact: ContactConfig{
+			Link: getEnv("CONTACT_LINK", ""),
+			Text: getEnv("CONTACT_TEXT", ""),
 		},
 		WebSearch: WebSearchConfig{
 			Enabled:  getEnvBool("WEB_SEARCH_ENABLED", false),

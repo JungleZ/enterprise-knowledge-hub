@@ -191,8 +191,16 @@ func parseDocx(path string) (string, error) {
 
 // ---------- Chunking ----------
 
-// ChunkText splits text into overlapping chunks at paragraph boundaries.
-func (s *IngestService) ChunkText(text string, size, overlap int) []string {
+// chunkSeg is a chunk together with the 1-based page it starts on (0 = unknown).
+type chunkSeg struct {
+	Text string
+	Page int
+}
+
+// ChunkText splits text into overlapping chunks at paragraph boundaries while
+// tracking the source page (via pageBreak markers inserted by paginated
+// parsers such as parsePDF). Non-paginated sources yield Page = 0.
+func (s *IngestService) ChunkText(text string, size, overlap int) []chunkSeg {
 	if size <= 0 {
 		size = s.chunkSize
 	}
@@ -203,49 +211,73 @@ func (s *IngestService) ChunkText(text string, size, overlap int) []string {
 		overlap = size / 5
 	}
 
-	paragraphs := strings.Split(text, "\n")
-	var blocks []string
-	var cur strings.Builder
-	for _, p := range paragraphs {
+	hasPages := strings.Contains(text, pageBreak)
+	type para struct {
+		text string
+		page int
+	}
+	var paras []para
+	ffCount := 0
+	for _, p := range strings.Split(text, "\n") {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue
 		}
-		if cur.Len() > 0 {
-			cur.WriteString("\n")
+		page := 0
+		if hasPages {
+			page = ffCount + 1
 		}
-		cur.WriteString(p)
-		if cur.Len() >= size {
-			blocks = append(blocks, cur.String())
-			cur.Reset()
+		paras = append(paras, para{p, page})
+		ffCount += strings.Count(p, pageBreak)
+	}
+
+	var blocks []chunkSeg
+	var cur chunkSeg
+	for _, pr := range paras {
+		for si, sub := range strings.Split(pr.text, pageBreak) {
+			sub = strings.TrimSpace(sub)
+			if sub == "" {
+				continue
+			}
+			sp := pr.page
+			if hasPages && si > 0 {
+				sp = pr.page + si
+			}
+			if cur.Text != "" {
+				cur.Text += "\n"
+			}
+			cur.Text += sub
+			cur.Page = sp
+			if utf8.RuneCountInString(cur.Text) >= size {
+				blocks = append(blocks, cur)
+				cur = chunkSeg{}
+			}
 		}
 	}
-	if cur.Len() > 0 {
-		blocks = append(blocks, cur.String())
+	if cur.Text != "" {
+		blocks = append(blocks, cur)
 	}
 
 	if len(blocks) == 1 {
-		// single paragraph block: force-split if it exceeds 2x size
-		// (a huge newline-free paragraph would otherwise never be chunked)
-		rb := []rune(blocks[0])
+		rb := []rune(blocks[0].Text)
 		if len(rb) > size*2 {
-			return splitLong(rb, size, overlap)
+			return splitLongSeg(rb, size, overlap, blocks[0].Page)
 		}
 		return blocks
 	}
 
 	// merge small blocks, then re-split oversized blocks with overlap
-	var merged []string
+	var merged []chunkSeg
 	for _, b := range blocks {
-		rb := []rune(b)
+		rb := []rune(b.Text)
 		if len(rb) > size*2 {
-			merged = append(merged, splitLong(rb, size, overlap)...)
+			merged = append(merged, splitLongSeg(rb, size, overlap, b.Page)...)
 			continue
 		}
 		if len(merged) > 0 {
 			last := merged[len(merged)-1]
-			if utf8.RuneCountInString(last)+utf8.RuneCountInString(b) <= size+overlap {
-				merged[len(merged)-1] = last + "\n" + b
+			if utf8.RuneCountInString(last.Text)+utf8.RuneCountInString(b.Text) <= size+overlap {
+				merged[len(merged)-1] = chunkSeg{Text: last.Text + "\n" + b.Text, Page: last.Page}
 				continue
 			}
 		}
@@ -254,15 +286,15 @@ func (s *IngestService) ChunkText(text string, size, overlap int) []string {
 	return merged
 }
 
-func splitLong(rs []rune, size, overlap int) []string {
-	var out []string
+func splitLongSeg(rs []rune, size, overlap, page int) []chunkSeg {
+	var out []chunkSeg
 	start := 0
 	for start < len(rs) {
 		end := start + size
 		if end > len(rs) {
 			end = len(rs)
 		}
-		out = append(out, string(rs[start:end]))
+		out = append(out, chunkSeg{Text: string(rs[start:end]), Page: page})
 		if end == len(rs) {
 			break
 		}
@@ -285,7 +317,7 @@ func (s *IngestService) ProcessDocument(doc *models.Document) error {
 		return errors.New("no extractable text")
 	}
 
-	chunks := s.ChunkText(text, s.chunkSize, s.chunkOverlap)
+	segs := s.ChunkText(text, s.chunkSize, s.chunkOverlap)
 	visibility := visibilityFromTags(doc.AccessTags)
 
 	// optional embeddings (batched to respect provider request size limits,
@@ -294,20 +326,23 @@ func (s *IngestService) ProcessDocument(doc *models.Document) error {
 	if s.embedder.Enabled() {
 		s.embedSem <- struct{}{}
 		defer func() { <-s.embedSem }()
-		for i := 0; i < len(chunks); i += s.embedBatch {
+		for i := 0; i < len(segs); i += s.embedBatch {
 			end := i + s.embedBatch
-			if end > len(chunks) {
-				end = len(chunks)
+			if end > len(segs) {
+				end = len(segs)
 			}
-			texts := chunks[i:end]
+			texts := make([]string, 0, end-i)
+			for _, seg := range segs[i:end] {
+				texts = append(texts, seg.Text)
+			}
 			embeds, err := s.embedder.Embed(context.Background(), texts)
 			if err != nil {
 				// don't fail the whole doc on embedding error; degrade to BM25
-				logWarn("embedding batch %d/%d failed, falling back to BM25-only for the rest: %v", i/s.embedBatch+1, (len(chunks)+s.embedBatch-1)/s.embedBatch, err)
+				logWarn("embedding batch %d/%d failed, falling back to BM25-only for the rest: %v", i/s.embedBatch+1, (len(segs)+s.embedBatch-1)/s.embedBatch, err)
 				break
 			}
 			for j, e := range embeds {
-				if i+j < len(chunks) {
+				if i+j < len(segs) {
 					vectors[fmt.Sprintf("%d", i+j)] = e
 				}
 			}
@@ -319,14 +354,15 @@ func (s *IngestService) ProcessDocument(doc *models.Document) error {
 		title = doc.Filename
 	}
 
-	chunkModels := make([]models.Chunk, 0, len(chunks))
-	for i, c := range chunks {
+	chunkModels := make([]models.Chunk, 0, len(segs))
+	for i, seg := range segs {
 		cm := models.Chunk{
 			TenantID:   doc.TenantID,
 			KBID:       doc.KBID,
 			DocID:      doc.ID,
 			ChunkIndex: i,
-			Text:       c,
+			Page:       seg.Page,
+			Text:       seg.Text,
 			Title:      title,
 			Visibility: visibility,
 		}

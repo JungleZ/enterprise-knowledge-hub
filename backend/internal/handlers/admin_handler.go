@@ -6,6 +6,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 
+	"github.com/enterprise-kb/backend/internal/config"
 	"github.com/enterprise-kb/backend/internal/database"
 	"github.com/enterprise-kb/backend/internal/middleware"
 	"github.com/enterprise-kb/backend/internal/models"
@@ -13,12 +14,13 @@ import (
 )
 
 type AdminHandler struct {
-	svc   *services.AdminService
+	svc    *services.AdminService
 	ingest *services.IngestService
+	cfg    *config.Config
 }
 
-func NewAdminHandler(svc *services.AdminService) *AdminHandler {
-	return &AdminHandler{svc: svc}
+func NewAdminHandler(svc *services.AdminService, cfg *config.Config) *AdminHandler {
+	return &AdminHandler{svc: svc, cfg: cfg}
 }
 
 // SetIngest wires the ingest service for the reindex endpoint.
@@ -135,7 +137,11 @@ func (h *AdminHandler) Contact(c *fiber.Ctx) error {
 			"department": a.Department,
 		})
 	}
-	return c.JSON(fiber.Map{"admins": out})
+	return c.JSON(fiber.Map{
+		"admins":       out,
+		"contact_link": h.cfg.Contact.Link,
+		"contact_text": h.cfg.Contact.Text,
+	})
 }
 
 var _ = models.RoleSuperAdmin

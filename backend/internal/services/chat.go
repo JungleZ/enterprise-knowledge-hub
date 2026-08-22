@@ -11,6 +11,7 @@ import (
 	"github.com/enterprise-kb/backend/internal/database"
 	"github.com/enterprise-kb/backend/internal/llm"
 	"github.com/enterprise-kb/backend/internal/models"
+	"github.com/enterprise-kb/backend/internal/rerank"
 	"github.com/enterprise-kb/backend/internal/search"
 )
 
@@ -20,15 +21,17 @@ type ChatService struct {
 	search      *search.Service
 	embedder    llm.EmbeddingClient
 	answerer    llm.AnswerClient
+	reranker    *rerank.Client
 	web         *WebSearchClient
 	maxChunks   int
 }
 
-func NewChatService(searchSvc *search.Service, embedder llm.EmbeddingClient, answerer llm.AnswerClient) *ChatService {
+func NewChatService(searchSvc *search.Service, embedder llm.EmbeddingClient, answerer llm.AnswerClient, reranker *rerank.Client) *ChatService {
 	return &ChatService{
 		search:    searchSvc,
 		embedder:  embedder,
 		answerer:  answerer,
+		reranker:  reranker,
 		maxChunks: 6,
 	}
 }
@@ -127,7 +130,7 @@ func (s *ChatService) askPrep(in AskInput) (*AskStream, error) {
 	}
 
 	// 1) hybrid retrieval
-	hits, err := s.retrieve(in.TenantID, in.KBID, question, visibleTags, in.IsAdmin)
+	hits, err := s.retrieve(context.Background(), in.TenantID, in.KBID, question, visibleTags, in.IsAdmin)
 	if err != nil {
 		return nil, fmt.Errorf("retrieval failed: %w", err)
 	}
@@ -205,6 +208,7 @@ func (s *ChatService) askPrep(in AskInput) (*AskStream, error) {
 			Score:      h.Score,
 			ChunkText:  h.Text,
 			ChunkIndex: h.ChunkIndex,
+			Page:       h.Page,
 		}
 		citations = append(citations, c)
 		chunkCtx = append(chunkCtx, llm.ContextChunk{
@@ -311,7 +315,7 @@ func (s *ChatService) StreamAnswer(ctx context.Context, st *AskStream, onDelta f
 }
 
 // retrieve runs BM25 + optional vector search and merges via RRF.
-func (s *ChatService) retrieve(tenantID uuid.UUID, kbID string, query string, visibleTags []string, isAdmin bool) ([]search.SearchResult, error) {
+func (s *ChatService) retrieve(ctx context.Context, tenantID uuid.UUID, kbID string, query string, visibleTags []string, isAdmin bool) ([]search.SearchResult, error) {
 	var kbFilter string
 	if kbID != "" {
 		kbFilter = kbID
@@ -332,9 +336,38 @@ func (s *ChatService) retrieve(tenantID uuid.UUID, kbID string, query string, vi
 	}
 
 	if len(vecHits) == 0 {
-		return bm25Hits, nil
+		return s.rerankIfEnabled(ctx, query, bm25Hits), nil
 	}
-	return rrfMerge(bm25Hits, vecHits, int64(s.maxChunks)), nil
+	merged := rrfMerge(bm25Hits, vecHits, int64(s.maxChunks))
+	return s.rerankIfEnabled(ctx, query, merged), nil
+}
+
+// rerankIfEnabled re-orders retrieval candidates with a cross-encoder reranker
+// when one is configured. Falls back to the original order on any error so the
+// chat pipeline never breaks because of a rerank outage.
+func (s *ChatService) rerankIfEnabled(ctx context.Context, query string, hits []search.SearchResult) []search.SearchResult {
+	if s.reranker == nil || !s.reranker.Enabled() || len(hits) <= 1 {
+		return hits
+	}
+	texts := make([]string, len(hits))
+	for i, h := range hits {
+		texts[i] = h.Text
+	}
+	order, err := s.reranker.Rank(ctx, query, texts)
+	if err != nil {
+		logWarn("rerank failed, using RRF order: %v", err)
+		return hits
+	}
+	out := make([]search.SearchResult, 0, len(order))
+	for _, idx := range order {
+		if idx >= 0 && idx < len(hits) {
+			out = append(out, hits[idx])
+		}
+	}
+	if len(out) == 0 {
+		return hits
+	}
+	return out
 }
 
 func (s *ChatService) vectorSearch(tenantID uuid.UUID, kbID, query string, visibleTags []string, isAdmin bool) ([]search.SearchResult, error) {
@@ -362,7 +395,7 @@ func (s *ChatService) vectorSearch(tenantID uuid.UUID, kbID, query string, visib
 	}
 
 	rows, err := database.DB.Raw(
-		"SELECT id::text, kb_id::text, doc_id::text, chunk_index, title, text, 1 - (embedding <=> ?) AS score FROM chunks WHERE "+
+		"SELECT id::text, kb_id::text, doc_id::text, chunk_index, page, title, text, 1 - (embedding <=> ?) AS score FROM chunks WHERE "+
 			where+" ORDER BY embedding <=> ? LIMIT 6",
 		append(args, vec)...,
 	).Rows()
@@ -374,7 +407,7 @@ func (s *ChatService) vectorSearch(tenantID uuid.UUID, kbID, query string, visib
 	var out []search.SearchResult
 	for rows.Next() {
 		var r search.SearchResult
-		if err := rows.Scan(&r.ID, &r.KBID, &r.DocID, &r.ChunkIndex, &r.Title, &r.Text, &r.Score); err != nil {
+		if err := rows.Scan(&r.ID, &r.KBID, &r.DocID, &r.ChunkIndex, &r.Page, &r.Title, &r.Text, &r.Score); err != nil {
 			continue
 		}
 		out = append(out, r)

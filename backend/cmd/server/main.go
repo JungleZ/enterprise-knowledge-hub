@@ -21,6 +21,7 @@ import (
 	"github.com/enterprise-kb/backend/internal/llm"
 	"github.com/enterprise-kb/backend/internal/middleware"
 	"github.com/enterprise-kb/backend/internal/models"
+	"github.com/enterprise-kb/backend/internal/rerank"
 	"github.com/enterprise-kb/backend/internal/search"
 	"github.com/enterprise-kb/backend/internal/services"
 )
@@ -65,7 +66,7 @@ func main() {
 	ingestSvc := services.NewIngestService(cfg.Storage.DocsPath, searchSvc, embedder)
 	ingestSvc.Configure(cfg.Embedding.BatchSize, cfg.Embedding.MaxConcurrent)
 
-	chatSvc := services.NewChatService(searchSvc, embedder, answerer)
+	chatSvc := services.NewChatService(searchSvc, embedder, answerer, rerank.New(cfg.Rerank))
 	chatSvc.SetWebSearch(services.NewWebSearchClient(
 		cfg.WebSearch.Enabled, cfg.WebSearch.APIKey, cfg.WebSearch.BaseURL, cfg.WebSearch.MaxCount,
 	))
@@ -81,7 +82,7 @@ func main() {
 	kbHandler := handlers.NewKBHandler()
 	docHandler := handlers.NewDocHandler(ingestSvc)
 	chatHandler := handlers.NewChatHandler(chatSvc)
-	adminHandler := handlers.NewAdminHandler(adminSvc)
+	adminHandler := handlers.NewAdminHandler(adminSvc, cfg)
 	adminHandler.SetIngest(ingestSvc)
 	botHandler := handlers.NewBotHandler()
 

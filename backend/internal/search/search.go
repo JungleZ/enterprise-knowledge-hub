@@ -22,6 +22,7 @@ type ChunkDoc struct {
 	KBID       string   `json:"kb_id"`
 	DocID      string   `json:"doc_id"`
 	ChunkIndex int      `json:"chunk_index"`
+	Page       int      `json:"page"`
 	Title      string   `json:"title"`
 	Text       string   `json:"text"`
 	Visibility []string `json:"visibility"`
@@ -120,6 +121,7 @@ func (s *Service) IndexChunks(chunks []models.Chunk) error {
 			KBID:       ch.KBID.String(),
 			DocID:      ch.DocID.String(),
 			ChunkIndex: ch.ChunkIndex,
+			Page:       ch.Page,
 			Title:      ch.Title,
 			Text:       ch.Text,
 			Visibility: ch.Visibility,
@@ -173,6 +175,7 @@ type Hit struct {
 	KBID       string   `json:"kb_id"`
 	DocID      string   `json:"doc_id"`
 	ChunkIndex int      `json:"chunk_index"`
+	Page       int      `json:"page"`
 	Title      string   `json:"title"`
 	Text       string   `json:"text"`
 	Visibility []string `json:"visibility"`
@@ -325,7 +328,7 @@ func (s *Service) searchOnce(filter, query string, limit int64) ([]SearchResult,
 		Filter: filter,
 		Limit:  limit,
 		AttributesToRetrieve: []string{
-			"id", "kb_id", "doc_id", "chunk_index", "title", "text", "visibility",
+			"id", "kb_id", "doc_id", "chunk_index", "page", "title", "text", "visibility",
 		},
 	}
 	resp, err := s.index.Search(query, req)
@@ -350,6 +353,9 @@ func (s *Service) searchOnce(filter, query string, limit int64) ([]SearchResult,
 		}
 		if v, ok := m["chunk_index"].(float64); ok {
 			hit.ChunkIndex = int(v)
+		}
+		if v, ok := m["page"].(float64); ok {
+			hit.Page = int(v)
 		}
 		if v, ok := m["title"].(string); ok {
 			hit.Title = v
