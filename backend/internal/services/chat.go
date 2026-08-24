@@ -166,13 +166,21 @@ func (s *ChatService) askPrep(in AskInput) (*AskStream, error) {
 	// not calibrated enough to gate on (legit and off-topic matches overlap),
 	// so we only fall back to the stricter "no hits at all" rule.
 	bestRaw := 0.0
+	bestVec := 0.0
 	for _, h := range hits {
 		if h.RawScore > bestRaw {
 			bestRaw = h.RawScore
 		}
+		if h.VectorScore > bestVec {
+			bestVec = h.VectorScore
+		}
 	}
+	// When semantic (vector) search is enabled, gate on the COSINE similarity
+	// specifically. Using the max of BM25+vector (RawScore) let a weak BM25
+	// lexical match mask a low semantic score and wrongly answer off-topic
+	// questions; gating on VectorScore alone avoids that.
 	isMissed := len(hits) == 0
-	if s.embedder.Enabled() && len(hits) > 0 && bestRaw < s.missThreshold {
+	if s.embedder.Enabled() && len(hits) > 0 && bestVec < s.missThreshold {
 		isMissed = true
 	}
 	if isMissed {
@@ -443,6 +451,7 @@ func (s *ChatService) vectorSearch(tenantID uuid.UUID, kbID, query string, visib
 			continue
 		}
 		r.RawScore = r.Score
+		r.VectorScore = r.Score
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -461,27 +470,34 @@ func rrfMerge(a, b []search.SearchResult, limit int64) []search.SearchResult {
 		hit   search.SearchResult
 		score float64
 		raw   float64
+		vec   float64
 	}
 	m := map[string]*entry{}
 	var order []string
 	for i, h := range a {
 		if _, ok := m[h.ID]; !ok {
-			m[h.ID] = &entry{hit: h, raw: h.RawScore}
+			m[h.ID] = &entry{hit: h, raw: h.RawScore, vec: h.VectorScore}
 			order = append(order, h.ID)
 		}
 		m[h.ID].score += 1.0 / (60 + float64(i))
 		if h.RawScore > m[h.ID].raw {
 			m[h.ID].raw = h.RawScore
+		}
+		if h.VectorScore > m[h.ID].vec {
+			m[h.ID].vec = h.VectorScore
 		}
 	}
 	for i, h := range b {
 		if _, ok := m[h.ID]; !ok {
-			m[h.ID] = &entry{hit: h, raw: h.RawScore}
+			m[h.ID] = &entry{hit: h, raw: h.RawScore, vec: h.VectorScore}
 			order = append(order, h.ID)
 		}
 		m[h.ID].score += 1.0 / (60 + float64(i))
 		if h.RawScore > m[h.ID].raw {
 			m[h.ID].raw = h.RawScore
+		}
+		if h.VectorScore > m[h.ID].vec {
+			m[h.ID].vec = h.VectorScore
 		}
 	}
 	out := make([]search.SearchResult, 0, len(order))
@@ -489,6 +505,7 @@ func rrfMerge(a, b []search.SearchResult, limit int64) []search.SearchResult {
 		e := m[id]
 		e.hit.Score = e.score
 		e.hit.RawScore = e.raw
+		e.hit.VectorScore = e.vec
 		out = append(out, e.hit)
 	}
 	if int64(len(out)) > limit {

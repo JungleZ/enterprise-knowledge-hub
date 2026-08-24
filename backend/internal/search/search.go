@@ -189,6 +189,10 @@ type SearchResult struct {
 	// Used by the chat service to decide whether retrieval actually answered
 	// the question (miss detection threshold).
 	RawScore float64
+	// VectorScore is the cosine similarity from vector search (0 for BM25-only
+	// hits). The miss-detection gate relies on this rather than RawScore so a
+	// weak BM25 lexical match can't mask a low semantic relevance.
+	VectorScore float64
 }
 
 // Search performs BM25 full-text retrieval with tenant/visibility filtering.
