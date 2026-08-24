@@ -396,13 +396,18 @@ func (s *ChatService) rerankIfEnabled(ctx context.Context, query string, hits []
 }
 
 func (s *ChatService) vectorSearch(tenantID uuid.UUID, kbID, query string, visibleTags []string, isAdmin bool) ([]search.SearchResult, error) {
-	emb, err := s.embedder.Embed(context.Background(), []string{query})
+	emb, err := s.embedder.EmbedQuery(context.Background(), query)
 	if err != nil || len(emb) == 0 {
 		return nil, err
 	}
-	vec := emb[0]
+	// models.Vector serializes to the "[...]" text pgvector expects (plain
+	// []float32 would be sent as a record and rejected by the <=> operator).
+	vec := models.Vector(emb)
 
-	args := []interface{}{tenantID, vec}
+	// Args must match the SQL placeholder order: the SELECT's `embedding <=> ?`
+	// comes first (vec), then the WHERE tenant_id (tenantID), then optional
+	// filters, and finally the ORDER BY's `embedding <=> ?` (vec appended below).
+	args := []interface{}{vec, tenantID}
 	where := "tenant_id = ? AND embedding IS NOT NULL"
 	if kbID != "" {
 		where += " AND kb_id = ?"
@@ -413,15 +418,17 @@ func (s *ChatService) vectorSearch(tenantID uuid.UUID, kbID, query string, visib
 		if len(tags) == 0 {
 			tags = []string{"public"}
 		}
-		where += " AND (visibility ?| array[" + placeholders(len(tags)) + "])"
+		// jsonb_exists_any avoids the `?|` operator, which collides with the
+		// driver's `?` placeholder and breaks the query.
+		where += " AND jsonb_exists_any(visibility, array[" + placeholders(len(tags)) + "])"
 		for _, t := range tags {
 			args = append(args, t)
 		}
 	}
 
 	rows, err := database.DB.Raw(
-		"SELECT id::text, kb_id::text, doc_id::text, chunk_index, page, title, text, 1 - (embedding <=> ?) AS score FROM chunks WHERE "+
-			where+" ORDER BY embedding <=> ? LIMIT 6",
+		"SELECT id::text, kb_id::text, doc_id::text, chunk_index, page, title, text, 1 - (embedding <=> ?::vector) AS score FROM chunks WHERE "+
+			where+" ORDER BY embedding <=> ?::vector LIMIT 6",
 		append(args, vec)...,
 	).Rows()
 	if err != nil {

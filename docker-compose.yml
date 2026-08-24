@@ -52,14 +52,16 @@ services:
       AUTH_MIN_PASSWORD_LEN: "8"
       # 审计日志保留天数（每天清理一次）
       AUDIT_RETENTION_DAYS: "180"
-      # embedding 分批与并发上限（防止大文档/并发上传打爆 API）
+      # embedding 分批与并发上限（防止大文档/并发上传打爆 API）。
+      # 注意：Jina 免费层并发上限为 2，故默认 1 以免触发 429。
       EMBED_BATCH_SIZE: "32"
-      EMBED_MAX_CONCURRENCY: "4"
-      # 可插拔 AI 配置。OpenRouter 只提供 LLM（无 embedding），故 LLM 走 OpenRouter、向量检索保持离线 BM25。
-      EMBEDDING_PROVIDER: ""
-      EMBEDDING_API_KEY: ""
-      EMBEDDING_MODEL: "BAAI/bge-m3"
-      EMBEDDING_BASE_URL: "https://api.siliconflow.cn/v1"
+      EMBED_MAX_CONCURRENCY: "${EMBED_MAX_CONCURRENCY:-1}"
+      # 可插拔 AI 配置。密钥一律走 .env（不入库）；EMBEDDING_API_KEY 为空时向量检索自动关闭（离线 BM25）。
+      # 演示默认走 Jina（jina-embeddings-v3，1024 维，免费）；换供应商改 .env 即可。
+      EMBEDDING_PROVIDER: "${EMBEDDING_PROVIDER:-openai}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-jina-embeddings-v3}"
+      EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL:-https://api.jina.ai/v1}"
       LLM_PROVIDER: "openrouter"
       LLM_API_KEY: "${LLM_API_KEY:-}"
       LLM_MODEL: "openrouter/free"

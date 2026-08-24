@@ -20,7 +20,11 @@ import (
 type EmbeddingClient interface {
 	Enabled() bool
 	Dim() int
+	// Embed encodes a batch of document/section texts.
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
+	// EmbedQuery encodes a single search query. Providers that need a
+	// different input type for queries (e.g. Cohere) override this.
+	EmbedQuery(ctx context.Context, text string) ([]float32, error)
 }
 
 // AnswerResult bundles the final answer with a structured relevance verdict.
@@ -75,6 +79,18 @@ func NewEmbedding(cfg config.AIConfig) EmbeddingClient {
 		return &noneEmbedding{}
 	}
 	base := strings.TrimRight(cfg.EmbeddingBaseURL, "/")
+	if cfg.EmbeddingProvider == "cohere" {
+		if base == "" {
+			base = "https://api.cohere.ai/v1"
+		}
+		return &cohereEmbedder{
+			baseURL: base,
+			apiKey:  cfg.EmbeddingAPIKey,
+			model:   cfg.EmbeddingModel,
+			dim:     1024,
+			client:  &http.Client{Timeout: 60 * time.Second},
+		}
+	}
 	return &openAIEmbedder{
 		baseURL: base,
 		apiKey:  cfg.EmbeddingAPIKey,
@@ -124,6 +140,78 @@ func (e *openAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		e.dim = len(res[0])
 	}
 	return res, nil
+}
+
+func (e *openAIEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	emb, err := e.Embed(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(emb) == 0 {
+		return nil, fmt.Errorf("openai embed returned no vector")
+	}
+	return emb[0], nil
+}
+
+// ---------- Cohere embedding implementation ----------
+
+type cohereEmbedder struct {
+	baseURL string
+	apiKey  string
+	model   string
+	dim     int
+	client  *http.Client
+}
+
+func (e *cohereEmbedder) Enabled() bool { return true }
+func (e *cohereEmbedder) Dim() int      { return e.dim }
+
+func (e *cohereEmbedder) embed(ctx context.Context, texts []string, inputType string) ([][]float32, error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"model":      e.model,
+		"texts":      texts,
+		"input_type": inputType,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/embed", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("cohere embed error %d: %s", resp.StatusCode, string(b))
+	}
+	var out struct {
+		Embeddings [][]float32 `json:"embeddings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if len(out.Embeddings) > 0 {
+		e.dim = len(out.Embeddings[0])
+	}
+	return out.Embeddings, nil
+}
+
+func (e *cohereEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return e.embed(ctx, texts, "search_document")
+}
+
+func (e *cohereEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	emb, err := e.embed(ctx, []string{text}, "search_query")
+	if err != nil {
+		return nil, err
+	}
+	if len(emb) == 0 {
+		return nil, fmt.Errorf("cohere embed returned no vector")
+	}
+	return emb[0], nil
 }
 
 func NewAnswer(cfg config.AIConfig) AnswerClient {
@@ -334,6 +422,9 @@ type noneEmbedding struct{}
 func (n *noneEmbedding) Enabled() bool { return false }
 func (n *noneEmbedding) Dim() int      { return 0 }
 func (n *noneEmbedding) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return nil, errors.New("embedding disabled")
+}
+func (n *noneEmbedding) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
 	return nil, errors.New("embedding disabled")
 }
 
