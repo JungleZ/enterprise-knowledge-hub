@@ -18,7 +18,10 @@ import (
 // minInterval enforces a minimum spacing between rerank API calls. Cohere's
 // trial keys are capped at 10 requests/minute, so without throttling a burst of
 // questions would all 429 and the miss-gate would wrongly reject everything.
-const minInterval = 7 * time.Second
+// Other (OpenAI-compatible) providers such as Jina have far higher quotas, so
+// we only throttle hard for Cohere and use a small interval elsewhere.
+const cohereInterval = 7 * time.Second
+const defaultInterval = 100 * time.Millisecond
 
 // Client re-ranks retrieval candidates with a cross-encoder reranker.
 type Client struct {
@@ -151,13 +154,17 @@ func (c *Client) doRank(ctx context.Context, url string, body map[string]interfa
 	if err != nil {
 		return nil, err
 	}
-	// Throttle: ensure at least minInterval between successive API calls so we
+	// Throttle: ensure at least interval between successive API calls so we
 	// stay within the provider's rate limit (Cohere trial: 10/min). Retry a few
 	// times on 429 before giving up; the chat pipeline falls back to the vector
 	// gate so an exhausted quota never blocks answers outright.
+	interval := defaultInterval
+	if c.cfg.Provider == "cohere" {
+		interval = cohereInterval
+	}
 	c.mu.Lock()
-	if elapsed := time.Since(c.last); elapsed < minInterval {
-		time.Sleep(minInterval - elapsed)
+	if elapsed := time.Since(c.last); elapsed < interval {
+		time.Sleep(interval - elapsed)
 	}
 	c.last = time.Now()
 	c.mu.Unlock()
@@ -182,7 +189,7 @@ func (c *Client) doRank(ctx context.Context, url string, body map[string]interfa
 		if resp.StatusCode == http.StatusTooManyRequests {
 			lastErr = fmt.Errorf("rerank rate limited (429)")
 			log.Printf("[rerank] 429, backing off (%d/4)", attempt+1)
-			time.Sleep(minInterval)
+			time.Sleep(interval)
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {

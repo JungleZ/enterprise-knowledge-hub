@@ -183,10 +183,18 @@ func (s *ChatService) askPrep(in AskInput) (*AskStream, error) {
 	}
 	reranked := bestRerank > 0
 	isMissed := len(hits) == 0
-	switch {
-	case reranked && bestRerank < s.rerankMissThreshold:
+	// Primary miss signal is the vector cosine similarity (rate-limit free with
+	// Cohere embeddings and well separated on this corpus: off-topic queries
+	// score <= ~0.52, in-scope >= ~0.55). The rerank score is a secondary,
+	// stricter signal used only when a reranker returns discriminative scores
+	// (e.g. Cohere reranker-v3.5). A query is a miss if EITHER signal is below
+	// its threshold — this keeps clearly off-topic questions out while never
+	// rejecting in-scope ones, and degrades gracefully if the reranker is rate
+	// limited (bestRerank stays 0 and only the vector gate applies).
+	if s.embedder.Enabled() && len(hits) > 0 && bestVec < s.missThreshold {
 		isMissed = true
-	case !reranked && s.embedder.Enabled() && len(hits) > 0 && bestVec < s.missThreshold:
+	}
+	if reranked && bestRerank < s.rerankMissThreshold {
 		isMissed = true
 	}
 	if isMissed {

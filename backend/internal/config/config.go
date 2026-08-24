@@ -119,7 +119,7 @@ type EmbeddingConfig struct {
 // are supported.
 type RerankConfig struct {
 	Enabled  bool
-	Provider string // "siliconflow" | "cohere" | "" (disabled)
+	Provider string // "openai" (OpenAI-compatible: SiliconFlow/Jina/...) | "cohere" | "" (disabled)
 	APIKey   string
 	Model    string
 	BaseURL  string
