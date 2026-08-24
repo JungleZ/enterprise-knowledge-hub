@@ -18,26 +18,31 @@ import (
 var ErrNoAccess = errors.New("no access to this knowledge base")
 
 type ChatService struct {
-	search        *search.Service
-	embedder      llm.EmbeddingClient
-	answerer      llm.AnswerClient
-	reranker      *rerank.Client
-	web           *WebSearchClient
-	maxChunks     int
-	missThreshold float64
+	search              *search.Service
+	embedder            llm.EmbeddingClient
+	answerer            llm.AnswerClient
+	reranker            *rerank.Client
+	web                 *WebSearchClient
+	maxChunks           int
+	missThreshold       float64
+	rerankMissThreshold float64
 }
 
-func NewChatService(searchSvc *search.Service, embedder llm.EmbeddingClient, answerer llm.AnswerClient, reranker *rerank.Client, missThreshold float64) *ChatService {
+func NewChatService(searchSvc *search.Service, embedder llm.EmbeddingClient, answerer llm.AnswerClient, reranker *rerank.Client, missThreshold, rerankMissThreshold float64) *ChatService {
 	if missThreshold <= 0 {
 		missThreshold = 0.25
 	}
+	if rerankMissThreshold <= 0 {
+		rerankMissThreshold = 0.1
+	}
 	return &ChatService{
-		search:        searchSvc,
-		embedder:      embedder,
-		answerer:      answerer,
-		reranker:      reranker,
-		maxChunks:     6,
-		missThreshold: missThreshold,
+		search:              searchSvc,
+		embedder:            embedder,
+		answerer:            answerer,
+		reranker:            reranker,
+		maxChunks:           6,
+		missThreshold:       missThreshold,
+		rerankMissThreshold: rerankMissThreshold,
 	}
 }
 
@@ -158,29 +163,30 @@ func (s *ChatService) askPrep(in AskInput) (*AskStream, error) {
 		return nil, err
 	}
 
-	// 2) relevance gate: when semantic (vector) search is enabled its cosine
-	// similarity is a well-calibrated relevance signal, so a question whose
-	// best chunk scores below the threshold is treated as unanswered — this
-	// stops off-topic questions from being answered with weakly-related
-	// chunks. With BM25-only the ranking score from CJK query expansion is
-	// not calibrated enough to gate on (legit and off-topic matches overlap),
-	// so we only fall back to the stricter "no hits at all" rule.
-	bestRaw := 0.0
+	// 2) relevance gate. The cross-encoder rerank score is the most
+	// discriminative relevance signal, so we gate on it first — but only when the
+	// rerank actually returned scores (bestRerank > 0). If the reranker is rate
+	// limited / unavailable, bestRerank stays 0 and we fall back to the vector
+	// cosine gate, and finally to the strict "no hits" rule. Gating on the cosine
+	// (or BM25) alone let weakly related chunks leak off-topic answers, so the
+	// rerank score — trained to separate relevant from irrelevant — is preferred
+	// whenever available.
 	bestVec := 0.0
+	bestRerank := 0.0
+	if len(hits) > 0 {
+		bestRerank = hits[0].RerankScore
+	}
 	for _, h := range hits {
-		if h.RawScore > bestRaw {
-			bestRaw = h.RawScore
-		}
 		if h.VectorScore > bestVec {
 			bestVec = h.VectorScore
 		}
 	}
-	// When semantic (vector) search is enabled, gate on the COSINE similarity
-	// specifically. Using the max of BM25+vector (RawScore) let a weak BM25
-	// lexical match mask a low semantic score and wrongly answer off-topic
-	// questions; gating on VectorScore alone avoids that.
+	reranked := bestRerank > 0
 	isMissed := len(hits) == 0
-	if s.embedder.Enabled() && len(hits) > 0 && bestVec < s.missThreshold {
+	switch {
+	case reranked && bestRerank < s.rerankMissThreshold:
+		isMissed = true
+	case !reranked && s.embedder.Enabled() && len(hits) > 0 && bestVec < s.missThreshold:
 		isMissed = true
 	}
 	if isMissed {
@@ -386,7 +392,7 @@ func (s *ChatService) rerankIfEnabled(ctx context.Context, query string, hits []
 	for i, h := range hits {
 		texts[i] = h.Text
 	}
-	order, err := s.reranker.Rank(ctx, query, texts)
+	order, scores, err := s.reranker.Rank(ctx, query, texts)
 	if err != nil {
 		logWarn("rerank failed, using RRF order: %v", err)
 		return hits
@@ -394,7 +400,12 @@ func (s *ChatService) rerankIfEnabled(ctx context.Context, query string, hits []
 	out := make([]search.SearchResult, 0, len(order))
 	for _, idx := range order {
 		if idx >= 0 && idx < len(hits) {
-			out = append(out, hits[idx])
+			h := hits[idx]
+			if idx < len(scores) {
+				h.Score = scores[idx]
+				h.RerankScore = scores[idx]
+			}
+			out = append(out, h)
 		}
 	}
 	if len(out) == 0 {

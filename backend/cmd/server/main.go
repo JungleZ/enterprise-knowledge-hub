@@ -66,7 +66,7 @@ func main() {
 	ingestSvc := services.NewIngestService(cfg.Storage.DocsPath, searchSvc, embedder)
 	ingestSvc.Configure(cfg.Embedding.BatchSize, cfg.Embedding.MaxConcurrent)
 
-	chatSvc := services.NewChatService(searchSvc, embedder, answerer, rerank.New(cfg.Rerank), cfg.MissThreshold)
+	chatSvc := services.NewChatService(searchSvc, embedder, answerer, rerank.New(cfg.Rerank), cfg.MissThreshold, cfg.RerankMissThreshold)
 	chatSvc.SetWebSearch(services.NewWebSearchClient(
 		cfg.WebSearch.Enabled, cfg.WebSearch.APIKey, cfg.WebSearch.BaseURL, cfg.WebSearch.MaxCount,
 	))

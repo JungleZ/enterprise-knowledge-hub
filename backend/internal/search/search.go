@@ -193,6 +193,10 @@ type SearchResult struct {
 	// hits). The miss-detection gate relies on this rather than RawScore so a
 	// weak BM25 lexical match can't mask a low semantic relevance.
 	VectorScore float64
+	// RerankScore is the cross-encoder relevance assigned by the reranker (0
+	// when rerank is disabled). It is the most discriminative relevance signal,
+	// so the miss-detection gate prefers it over VectorScore when available.
+	RerankScore float64
 }
 
 // Search performs BM25 full-text retrieval with tenant/visibility filtering.

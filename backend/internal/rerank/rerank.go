@@ -5,23 +5,34 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/enterprise-kb/backend/internal/config"
 )
 
+// minInterval enforces a minimum spacing between rerank API calls. Cohere's
+// trial keys are capped at 10 requests/minute, so without throttling a burst of
+// questions would all 429 and the miss-gate would wrongly reject everything.
+const minInterval = 7 * time.Second
+
 // Client re-ranks retrieval candidates with a cross-encoder reranker.
 type Client struct {
 	cfg    config.RerankConfig
 	client *http.Client
+	mu     sync.Mutex
+	last   time.Time
 }
 
 // New builds a rerank client. Callers should check Enabled() before use.
 func New(cfg config.RerankConfig) *Client {
 	return &Client{
 		cfg:    cfg,
-		client: &http.Client{Timeout: 15 * time.Second},
+		client: &http.Client{Timeout: 20 * time.Second},
 	}
 }
 
@@ -30,16 +41,17 @@ func (c *Client) Enabled() bool {
 	return c.cfg.Enabled && c.cfg.APIKey != "" && c.cfg.Provider != ""
 }
 
-// Rank returns the input indices ordered by descending relevance to query.
-// docIndices is the list of candidate document texts; the returned slice has
-// the same elements, sorted best-first, truncated to TopN when set.
-func (c *Client) Rank(ctx context.Context, query string, docs []string) ([]int, error) {
+// Rank returns the input indices ordered by descending relevance to query,
+// together with the per-document relevance scores (index-aligned to docs).
+// docIndices is the list of candidate document texts; the returned order slice
+// has the same elements, sorted best-first, truncated to TopN when set.
+func (c *Client) Rank(ctx context.Context, query string, docs []string) ([]int, []float64, error) {
 	if len(docs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	scores, err := c.scores(ctx, query, docs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	order := make([]int, len(scores))
 	for i := range order {
@@ -56,7 +68,7 @@ func (c *Client) Rank(ctx context.Context, query string, docs []string) ([]int, 
 	if c.cfg.TopN > 0 && len(order) > c.cfg.TopN {
 		order = order[:c.cfg.TopN]
 	}
-	return order, nil
+	return order, scores, nil
 }
 
 // scores queries the configured rerank provider and returns a relevance score
@@ -77,7 +89,7 @@ func (c *Client) scoreOpenAI(ctx context.Context, query string, docs []string) (
 		"documents": docs,
 		"top_n":     len(docs),
 	}
-	url := c.cfg.BaseURL
+	url := strings.TrimRight(c.cfg.BaseURL, "/")
 	if url == "" {
 		url = "https://api.siliconflow.cn/v1"
 	}
@@ -85,8 +97,8 @@ func (c *Client) scoreOpenAI(ctx context.Context, query string, docs []string) (
 	return c.doRank(ctx, url, body, func(raw json.RawMessage) ([]float64, error) {
 		var resp struct {
 			Results []struct {
-				Index           int     `json:"index"`
-				RelevanceScore  float64 `json:"relevance_score"`
+				Index          int     `json:"index"`
+				RelevanceScore float64 `json:"relevance_score"`
 			} `json:"results"`
 		}
 		if err := json.Unmarshal(raw, &resp); err != nil {
@@ -109,10 +121,11 @@ func (c *Client) scoreCohere(ctx context.Context, query string, docs []string) (
 		"documents": docs,
 		"top_n":     len(docs),
 	}
-	url := c.cfg.BaseURL
+	url := strings.TrimRight(c.cfg.BaseURL, "/")
 	if url == "" {
-		url = "https://api.cohere.ai/v1/rerank"
+		url = "https://api.cohere.ai/v1"
 	}
+	url = url + "/rerank"
 	return c.doRank(ctx, url, body, func(raw json.RawMessage) ([]float64, error) {
 		var resp struct {
 			Results []struct {
@@ -138,23 +151,44 @@ func (c *Client) doRank(ctx context.Context, url string, body map[string]interfa
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
+	// Throttle: ensure at least minInterval between successive API calls so we
+	// stay within the provider's rate limit (Cohere trial: 10/min). Retry a few
+	// times on 429 before giving up; the chat pipeline falls back to the vector
+	// gate so an exhausted quota never blocks answers outright.
+	c.mu.Lock()
+	if elapsed := time.Since(c.last); elapsed < minInterval {
+		time.Sleep(minInterval - elapsed)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
+	c.last = time.Now()
+	c.mu.Unlock()
+
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		raw, decErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if decErr != nil {
+			return nil, decErr
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			lastErr = fmt.Errorf("rerank rate limited (429)")
+			log.Printf("[rerank] 429, backing off (%d/4)", attempt+1)
+			time.Sleep(minInterval)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("rerank api error %d", resp.StatusCode)
+		}
+		return parse(raw)
 	}
-	defer resp.Body.Close()
-	var raw json.RawMessage
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("rerank api error %d: %s", resp.StatusCode, string(raw))
-	}
-	return parse(raw)
+	return nil, lastErr
 }

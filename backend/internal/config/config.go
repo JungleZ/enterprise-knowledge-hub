@@ -7,22 +7,25 @@ import (
 )
 
 type Config struct {
-	Server       ServerConfig
-	Database     DatabaseConfig
-	JWT          JWTConfig
-	Meili        MeiliConfig
-	Storage      StorageConfig
-	AIConfig     AIConfig
-	Bot          BotConfig
-	WebSearch    WebSearchConfig
-	Auth         AuthConfig
-	Audit        AuditConfig
-	Embedding    EmbeddingConfig
-	Rerank       RerankConfig
-	Contact      ContactConfig
+	Server        ServerConfig
+	Database      DatabaseConfig
+	JWT           JWTConfig
+	Meili         MeiliConfig
+	Storage       StorageConfig
+	AIConfig      AIConfig
+	Bot           BotConfig
+	WebSearch     WebSearchConfig
+	Auth          AuthConfig
+	Audit         AuditConfig
+	Embedding     EmbeddingConfig
+	Rerank        RerankConfig
+	Contact       ContactConfig
 	SeedData      bool
 	ServerURL     string
 	MissThreshold float64
+	// RerankMissThreshold gates on the cross-encoder rerank score (used instead
+	// of MissThreshold when rerank is enabled). Below it the answer is a miss.
+	RerankMissThreshold float64
 }
 
 type ServerConfig struct {
@@ -169,7 +172,8 @@ func Load() *Config {
 		// ranking score and vector cosine similarity) for a question to be
 		// considered answered. Below it, the answer is treated as a miss so
 		// off-topic questions don't get hallucinated from weak chunks.
-		MissThreshold: getEnvFloat("MISS_THRESHOLD", 0.25),
+		MissThreshold:       getEnvFloat("MISS_THRESHOLD", 0.25),
+		RerankMissThreshold: getEnvFloat("RERANK_MISS_THRESHOLD", 0.1),
 		Auth: AuthConfig{
 			RegisterEnabled:  getEnvBool("AUTH_ALLOW_REGISTER", true),
 			LoginMaxFailures: getEnvInt("AUTH_LOGIN_MAX_FAILURES", 5),
