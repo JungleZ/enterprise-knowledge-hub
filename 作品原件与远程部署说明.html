@@ -1,0 +1,67 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta http-equiv="Content-Style-Type" content="text/css" />
+  <meta name="generator" content="pandoc" />
+  <title>作品原件与远程部署说明</title>
+  <style type="text/css">code{white-space: pre;}</style>
+</head>
+<body>
+<div id="header">
+<h1 class="title">作品原件与远程部署说明</h1>
+</div>
+<h1 id="作品原件与远程部署说明innorag">作品原件与远程部署说明（InnoRAG）</h1>
+<p>本作品为可运行的企业知识库智能问答系统，源代码与线上演示如下。</p>
+<h2 id="源代码仓库作品原件">1. 源代码仓库（作品原件）</h2>
+<ul>
+<li>GitHub 仓库：https://github.com/JungleZ/enterprise-knowledge-hub</li>
+<li>技术栈：Go（后端）+ MeiliSearch + PostgreSQL/pgvector + React（前端），Docker Compose 一键编排。</li>
+<li>主要目录：</li>
+<li><code>backend/</code>：检索、重排、误检门槛、LLM 生成、企微接入等核心服务</li>
+<li><code>frontend/</code>：Web 聊天界面与知识库管理</li>
+<li><code>docker-compose.yml</code>：本地/生产一键部署</li>
+</ul>
+<h2 id="远程部署环境">2. 远程部署环境</h2>
+<ul>
+<li>生产环境已部署于公网服务器：<code>8.215.92.160</code>（Docker Compose 编排 backend / frontend / MeiliSearch / Postgres）。</li>
+<li>部署方式：仓库内置 <code>docker-compose.yml</code>，执行 <code>docker compose up -d</code> 即可拉起全部服务；知识库更新后调用后台接口 <code>/api/admin/reindex</code> 一键重建向量索引。</li>
+</ul>
+<h2 id="访问方式">3. 访问方式</h2>
+<ul>
+<li>Web 演示界面：http://8.215.92.160:3002</li>
+<li>后端 API 基址：http://8.215.92.160:8081</li>
+<li>演示账号：<code>admin@demo.local</code> / <code>demo123</code></li>
+</ul>
+<h2 id="功能演示建议供评委验证">4. 功能演示建议（供评委验证）</h2>
+<table>
+<thead>
+<tr class="header">
+<th>类型</th>
+<th>示例问题</th>
+<th>预期表现</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>命中作答（带引用）</td>
+<td>年假怎么申请 / 报销流程是什么 / 请假需要谁来审批</td>
+<td>基于知识库作答，并标注引用来源</td>
+</tr>
+<tr class="even">
+<td>离题拒答</td>
+<td>公司食堂在几楼 / WiFi密码是多少 / 年终奖什么时候发</td>
+<td>明确回复“暂无相关答案”，不编造</td>
+</tr>
+<tr class="odd">
+<td>知识库缺失拒答</td>
+<td>产假是多少天 / 陪产假有几天</td>
+<td>检索无可靠依据，如实拒答</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>说明：演示租户名称已设为“Jagger007科技”，内置 HR/报销类知识库可用于上述验证。</p>
+</blockquote>
+</body>
+</html>

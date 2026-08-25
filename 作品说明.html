@@ -1,0 +1,28 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta http-equiv="Content-Style-Type" content="text/css" />
+  <meta name="generator" content="pandoc" />
+  <title>作品说明</title>
+  <style type="text/css">code{white-space: pre;}</style>
+</head>
+<body>
+<div id="header">
+<h1 class="title">作品说明</h1>
+</div>
+<h1 id="作品说明innorag-企业知识库智能问答系统">作品说明（InnoRAG 企业知识库智能问答系统）</h1>
+<h2 id="一创作思路">一、创作思路</h2>
+<p>企业在日常运营中，员工频繁咨询 HR 制度、报销流程、请假规范等内部知识，但传统关键词搜索往往“答非所问”，而通用大模型在遇到知识库未覆盖的问题时又会凭空编造（幻觉）或对明显离题的问题不拒答。本作品旨在构建一个<strong>企业私有知识库问答系统（InnoRAG）</strong>：只基于企业自有文档作答，对检索不到可靠依据的问题明确回复“暂无相关答案”，从而兼顾<strong>准确性、可溯源性与安全性</strong>，真正替代或辅助人工客服/行政答疑。</p>
+<h2 id="二ai-技术应用亮点">二、AI 技术应用亮点</h2>
+<ul>
+<li><strong>混合检索</strong>：MeiliSearch（BM25 全文）与 pgvector（向量语义）双路召回，经 RRF 倒数排名融合，兼顾“关键词精确命中”与“语义相似”。</li>
+<li><strong>全链路 Jina 向量能力</strong>：采用 <code>jina-embeddings-v3</code> 向量化 + <code>jina-reranker-v2</code> 跨编码器重排，免费且不限速，规避第三方 trial 限速导致检索降级。</li>
+<li><strong>误检门槛（Miss-Gate）</strong>：以“向量余弦相似度（阈值 0.57）”与“重排相关性分数（阈值 0.05）”双信号 OR 逻辑判定“无答案”，自动拒答离题与知识库缺失类问题，从源头抑制幻觉。</li>
+<li><strong>可控生成层</strong>：答案生成使用 <code>deepseek/deepseek-chat</code>，支持流式输出、引用溯源（标注命中文档），并在系统提示中禁止输出推理思考过程，保证回答简洁相关。</li>
+<li><strong>工程化能力</strong>：多租户隔离、企业微信机器人接入、管理后台一键重建索引、检索可观测日志。</li>
+</ul>
+<h2 id="三与天河发展关联性-ai-应用落地价值">三、与天河发展关联性 / AI 应用落地价值</h2>
+<p>天河区是广州总部经济与商业服务的核心承载区，园区、楼宇与各类企业高度密集，内部知识管理（制度问答、智能客服、政务咨询）需求旺盛。本作品可帮助区内企业<strong>零代码搭建私有知识库问答助手</strong>，显著降低行政与客服人力成本、提升员工自助服务效率；亦可落地于园区企业服务、商业楼宇物业问答、政务大厅智能咨询等场景，契合天河区建设人工智能应用示范与数字经济发展的产业方向，具备清晰的商业化与公共服务的复制价值。</p>
+</body>
+</html>
