@@ -62,11 +62,11 @@ services:
       EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-jina-embeddings-v3}"
       EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL:-https://api.jina.ai/v1}"
-      # Rerank 跨编码器重排（可选）。留空 = 关闭，仅用 BM25+向量 RRF 合并。
-      RERANK_ENABLED: "${RERANK_ENABLED:-false}"
-      RERANK_PROVIDER: "${RERANK_PROVIDER:-cohere}"
-      RERANK_BASE_URL: "${RERANK_BASE_URL:-https://api.cohere.ai/v1}"
-      RERANK_MODEL: "${RERANK_MODEL:-rerank-v3.5}"
+      # Rerank 跨编码器重排（默认开启，走 Jina）。关闭 = 仅 BM25+向量 RRF 合并。
+      RERANK_ENABLED: "${RERANK_ENABLED:-true}"
+      RERANK_PROVIDER: "${RERANK_PROVIDER:-openai}"
+      RERANK_BASE_URL: "${RERANK_BASE_URL:-https://api.jina.ai/v1}"
+      RERANK_MODEL: "${RERANK_MODEL:-jina-reranker-v2-base-multilingual}"
       RERANK_TOP_N: "${RERANK_TOP_N:-4}"
       RERANK_API_KEY: "${RERANK_API_KEY:-}"
       # 未命中阈值：开启 Rerank 后用 RERANK_MISS_THRESHOLD（跨编码器相关性分数），否则用 MISS_THRESHOLD（向量余弦）。
