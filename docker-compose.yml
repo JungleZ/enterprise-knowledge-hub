@@ -74,7 +74,7 @@ services:
       RERANK_MISS_THRESHOLD: "${RERANK_MISS_THRESHOLD:-0.1}"
       LLM_PROVIDER: "openrouter"
       LLM_API_KEY: "${LLM_API_KEY:-}"
-      LLM_MODEL: "openrouter/free"
+      LLM_MODEL: "deepseek/deepseek-chat"
       LLM_BASE_URL: "https://openrouter.ai/api/v1"
       # 联网搜索（Tavily 兼容契约）。WEB_SEARCH_ENABLED=false 时前端不显示「联网搜索」开关。
       WEB_SEARCH_ENABLED: "false"

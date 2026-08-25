@@ -22,7 +22,7 @@ func Seed(cfg *config.Config, ingest *IngestService) error {
 	}
 
 	fmt.Println("[seed] creating demo tenant ...")
-	tenant := models.Tenant{Name: "星辰科技有限公司", Slug: "demo-tenant", Plan: "pro"}
+	tenant := models.Tenant{Name: "Jagger007科技", Slug: "demo-tenant", Plan: "pro"}
 	if err := database.DB.Create(&tenant).Error; err != nil {
 		return err
 	}

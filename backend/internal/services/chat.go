@@ -191,10 +191,10 @@ func (s *ChatService) askPrep(in AskInput) (*AskStream, error) {
 	// its threshold — this keeps clearly off-topic questions out while never
 	// rejecting in-scope ones, and degrades gracefully if the reranker is rate
 	// limited (bestRerank stays 0 and only the vector gate applies).
-	if s.embedder.Enabled() && len(hits) > 0 && bestVec < s.missThreshold {
+	if s.embedder.Enabled() && len(hits) > 0 && bestVec > 0 && bestVec < s.missThreshold {
 		isMissed = true
 	}
-	if reranked && bestRerank < s.rerankMissThreshold {
+	if reranked && bestRerank > 0 && bestRerank < s.rerankMissThreshold {
 		isMissed = true
 	}
 	if isMissed {
